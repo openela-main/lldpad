@@ -1,0 +1,3849 @@
+From: Aaron Conole <aconole@redhat.com>
+Date: Wed, 09 Jun 2021 15:12:06 +0000
+Subject: [PATCH] lldpad: Rebase to openlldp branch 1.1.0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Open-LLDP released 1.1.0 which includes a number of important fixes
+relevant to customers.  The biggest changes are documented in the
+changelog.
+
+This patch updates the lldpad package to 1.1.0 branch as of
+4c75fa274230 "tx: rename variable"
+
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ ChangeLog                  |   15 +++
+ Makefile.am                |   26 +++++
+ README                     |    4 
+ config.c                   |   45 ++++++---
+ configure.ac               |   39 ++++++++
+ ctrl_iface.c               |    4 
+ dcb_protocol.c             |   19 +---
+ dcb_rule_chk.c             |    2 
+ dcbtool.c                  |    2 
+ dcbtool_cmds.c             |   24 -----
+ docs/liblldp_clif-vdp22.3  |    2 
+ docs/lldptool.8            |    4 
+ event_iface.c              |   22 +++-
+ include/config.h           |    3 
+ include/linux/if_link.h    |  100 ++++++++++++++++++++-
+ include/lldp.h             |   13 ++
+ include/lldp_basman_clif.h |    6 -
+ include/lldp_mod.h         |    2 
+ include/lldp_tlv.h         |   16 ++-
+ include/lldp_util.h        |    4 
+ include/lldptool.h         |    3 
+ include/qbg_ecp22.h        |    4 
+ include/qbg_vdpnl.h        |    1 
+ lldp/agent.c               |    4 
+ lldp/l2_packet.h           |    7 -
+ lldp/l2_packet_linux.c     |    6 -
+ lldp/ports.c               |    2 
+ lldp/rx.c                  |   41 ++++----
+ lldp/states.h              |    2 
+ lldp/tx.c                  |   31 ++++--
+ lldp_8021qaz.c             |   52 ++++++-----
+ lldp_8021qaz_clif.c        |   80 ++++++++++++-----
+ lldp_8021qaz_cmds.c        |    2 
+ lldp_8023.c                |   14 +--
+ lldp_basman.c              |   10 --
+ lldp_basman_cmds.c         |   90 +++++++++++++++++++
+ lldp_dcbx.c                |  111 +++++++++---------------
+ lldp_dcbx_cfg.c            |   32 ++++--
+ lldp_dcbx_cmds.c           |   13 ++
+ lldp_dcbx_nl.c             |   20 +---
+ lldp_evb.c                 |    8 -
+ lldp_evb22.c               |    8 -
+ lldp_evb22_cmds.c          |    2 
+ lldp_evb_cmds.c            |    2 
+ lldp_mand.c                |   41 +++++---
+ lldp_mand_cmds.c           |   17 ++-
+ lldp_med.c                 |    8 -
+ lldp_med_cmds.c            |    1 
+ lldp_rtnl.c                |    3 
+ lldp_tlv.c                 |   12 --
+ lldp_util.c                |  206 +++++++++++++++++++++++++++++----------------
+ lldpad.c                   |   21 +++-
+ lldpad.service             |    2 
+ lldpad.socket              |    3 
+ lldpad.spec.in             |   36 +++++--
+ lldptool.c                 |   38 ++------
+ lldptool_cmds.c            |    3 
+ log.c                      |    1 
+ parse_cli.l                |    3 
+ qbg/ecp.c                  |    8 -
+ qbg/ecp22.c                |   21 +++-
+ qbg/vdp.c                  |   16 +--
+ qbg/vdp22.c                |   12 +-
+ qbg/vdp22_cmds.c           |    7 -
+ qbg/vdp22sm.c              |    4 
+ qbg/vdp_cmds.c             |    2 
+ qbg/vdpnl.c                |    8 -
+ qbg_utils.c                |    3 
+ tlv_dcbx.c                 |   33 ++++---
+ vdptool.c                  |   23 ++---
+ vdptool_cisco_oui.c        |    2 
+ weak_readline.c            |   16 ++-
+ 72 files changed, 935 insertions(+), 512 deletions(-)
+
+diff -upr a/ChangeLog b/ChangeLog
+--- a/ChangeLog	2015-01-20 13:42:56.000000000 -0500
++++ b/ChangeLog	2021-06-09 11:00:02.478019444 -0400
+@@ -1,3 +1,18 @@
++Changes from 1.1.0 to
++Changes from 1.0.1 to 1.1
++- VDP: introduce vdptool
++- VDP: support retrieving vsi parameter
++- VDP: TLV support
++- VDP: Support OUI infrastructure
++- Switch from SysV to posix shared memory
++- DCBX: ignore PG configurations
++- DCBX: Allow for read-only LLDP configuration
++- Support multicast MAC
++- autoconf: Suport systemd or sysv for init system
++- 802.1qaz: print prio map
++- lldptool: Allow to modify optional TLV content
++- CVE-2018-10932: Don't print raw bytes from mngAddr
++- Misc. bug fixes
+ Changes from 0.9.46 to 1.0.1
+   Mostly fixes and man page updates
+   Added more testing infrastructure mostly for EVB
+diff -upr a/config.c b/config.c
+--- a/config.c	2015-01-20 13:42:56.000000000 -0500
++++ b/config.c	2020-10-23 14:12:58.973289274 -0400
+@@ -56,6 +56,21 @@
+ config_t lldpad_cfg;
+ 
+ /*
++ * config_ifkey - Generates a config key
++ *
++ * Given an interface name this functions generates
++ * a key (based on interface's index) suitable
++ * to pass to libconfig.
++ *
++ */
++void config_ifkey(const char *name, char *ifkey) {
++	int index = if_nametoindex(name);
++	
++	if(index)
++		sprintf(ifkey, "if%d", index);
++}
++
++/*
+  * init_cfg - initialze the global lldpad_cfg via config_init
+  *
+  * Returns true (1) for succes and false (0) for failed
+@@ -170,7 +185,7 @@ void scan_port(UNUSED void *eloop_data,
+ 		LIST_FOREACH(agent, &port->agent_head, entry) {
+ 			LLDPAD_DBG("%s: calling ifdown for agent %p.\n",
+ 				   __func__, agent);
+-			LIST_FOREACH(np, &lldp_head, lldp) {
++			LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 				ops = np->ops;
+ 				if (ops->lldp_mod_ifdown)
+ 					ops->lldp_mod_ifdown(ifname, agent);
+@@ -219,7 +234,7 @@ int check_cfg_file(void)
+ 			}
+ 		} else {
+ 			retval = errno;
+-			LLDPAD_ERR("%s is not readable and writeable",
++			LLDPAD_ERR("%s is not readable and writeable\n",
+ 				cfg_file_name);
+ 		}
+ 	}
+@@ -295,7 +310,7 @@ int get_int_config(config_setting_t *s,
+ 	}
+ 
+ 	if (!rval)
+-		LLDPAD_ERR("invalid value for %s", attr);
++		LLDPAD_ERR("invalid value for %s\n", attr);
+ 
+ 	return rval;
+ }
+@@ -339,7 +354,7 @@ int get_array_config(config_setting_t *s
+ 	}
+ 
+ 	if (!rval)
+-		LLDPAD_ERR("invalid setting for %s", attr);
++		LLDPAD_ERR("invalid setting for %s\n", attr);
+ 
+ 	return rval;
+ }
+@@ -379,7 +394,7 @@ void init_ports(void)
+ 		LIST_FOREACH(agent, &port->agent_head, entry) {
+ 			LLDPAD_DBG("%s: calling ifup for agent %p.\n",
+ 				   __func__, agent);
+-			LIST_FOREACH(np, &lldp_head, lldp) {
++			LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 				if (np->ops->lldp_mod_ifup)
+ 					np->ops->lldp_mod_ifup(p->if_name, agent);
+ 			}
+@@ -451,14 +466,15 @@ static int lookup_config_value(char *pat
+ int get_config_setting(const char *ifname, int agenttype, char *path,
+ 		       union cfg_get v, int type)
+ {
+-	char p[1024];
++	char p[1024], ifkey[IFNAMSIZ];
+ 	int rval = CONFIG_FALSE;
+ 	const char *section = agent_type2section(agenttype);
+ 
+ 	/* look for setting in section->ifname area first */
+ 	if (ifname) {
++		config_ifkey(ifname, ifkey);
+ 		snprintf(p, sizeof(p), "%s.%s.%s",
+-			 section, ifname, path);
++			 section, ifkey, path);
+ 		rval = lookup_config_value(p, v, type);
+ 	}
+ 
+@@ -475,15 +491,16 @@ int get_config_setting(const char *ifnam
+ int remove_config_setting(const char *ifname, int agenttype, char *parent,
+ 			  char *name)
+ {
+-	char p[1024];
++	char p[1024], ifkey[IFNAMSIZ];
+ 	int rval = CONFIG_FALSE;
+ 	config_setting_t *setting = NULL;
+ 	const char *section = agent_type2section(agenttype);
+ 
+ 	/* look for setting in section->ifname area first */
+-	if (ifname) {
++	if (ifname) { 
++		config_ifkey(ifname, ifkey);
+ 		snprintf(p, sizeof(p), "%s.%s.%s",
+-			 section, ifname, parent);
++			 section, ifkey, parent);
+ 		setting = config_lookup(&lldpad_cfg, p);
+ 	}
+ 
+@@ -570,15 +587,17 @@ int set_config_setting(const char *ifnam
+ 		       union cfg_set v, int type)
+ {
+ 	config_setting_t *setting = NULL;
+-	char p[1024];
++	char p[1024], ifkey[IFNAMSIZ];
+ 	int rval = cmd_success;
+ 	const char *section = agent_type2section(agenttype);
+ 
+ 	LLDPAD_DBG("%s(%i): \n", __func__, __LINE__);
+ 
+-	if (strlen(ifname))
++	if (strlen(ifname)){
++		config_ifkey(ifname, ifkey);
+ 		snprintf(p, sizeof(p), "%s.%s.%s",
+-			 section, ifname, path);
++			 section, ifkey, path);
++	}
+ 	else
+ 		snprintf(p, sizeof(p), "%s.%s.%s",
+ 			 section, LLDP_COMMON, path);
+diff -upr a/configure.ac b/configure.ac
+--- a/configure.ac	2015-01-20 13:42:56.000000000 -0500
++++ b/configure.ac	2021-06-09 11:00:02.479019457 -0400
+@@ -1,4 +1,4 @@
+-AC_INIT([lldpad], [1.0.1], [lldp-devel@open-lldp.org])
++AC_INIT([lldpad], [1.1.0], [lldp-devel@open-lldp.org])
+ AM_INIT_AUTOMAKE([-Wall -Werror foreign subdir-objects])
+ 
+ m4_pattern_allow([AM_PROG_AR])
+@@ -25,6 +25,43 @@ then
+  AC_MSG_ERROR([no suitable flex found. Please install the 'flex' package.])
+ fi
+ 
++dnl Begin determine the systemd use and location
++PKG_CHECK_MODULES([SYSTEMD], [systemd], use_systemd=yes, use_systemd=no)
++
++dnl Configure developer type flags
++OPENLLDP_CHECK_WARNINGS
++OPENLLDP_CHECK_ERROR
++
++dnl Set sysvinit values, if system has systemd it will be rewritten
++AC_SUBST(SPEC_BUILD_REQUIRES_POST, "chkconfig")
++AC_SUBST(SPEC_BUILD_REQUIRES_PREUN, "chkconfig initscripts")
++AC_SUBST(SPEC_BUILD_REQUIRES_POSTUN, "initscripts")
++specfile_install="%{_sysconfdir}/init.d/lldpad"
++specfile_install_socket=""
++
++if test "x$use_systemd" == xyes; then
++        dir=""
++        AC_ARG_WITH([systemdsystemunitdir],
++                AS_HELP_STRING([--with-systemdsystem unitdir=DIR],
++                 [Directory for systemd service files default from pkg-config variable systemdsystemunitdir]),
++                [dir=${withval}],
++                [dir="$($PKG_CONFIG --variable=systemdsystemunitdir systemd)"])
++
++	systemdsystemunitdir=${dir}
++	AC_SUBST(SYSTEMD_SYSTEM_UNIT_DIR, [$systemdsystemunitdir])
++	specfile_install="$systemdsystemunitdir/lldpad.service"	
++	specfile_install_socket="$systemdsystemunitdir/lldpad.socket"
++
++	AC_SUBST(SPEC_BUILD_REQUIRES_POST, "systemd")
++	AC_SUBST(SPEC_BUILD_REQUIRES_PREUN, "systemd")
++	AC_SUBST(SPEC_BUILD_REQUIRES_POSTUN, "systemd")
++fi
++
++AM_CONDITIONAL(SYSTEMD_SYSTEM, test "x$use_systemd" == xyes)
++AC_SUBST(SPEC_FILE_LLDPAD_SERVICE, $specfile_install)
++AC_SUBST(SPEC_FILE_LLDPAD_SOCKET, $specfile_install_socket)
++dnl End systemd stuff
++
+ PKG_CHECK_MODULES([LIBCONFIG], [libconfig >= 1.3.2])
+ PKG_CHECK_MODULES([LIBNL], [libnl-3.0 >= 3.2])
+ 
+diff -upr a/ctrl_iface.c b/ctrl_iface.c
+--- a/ctrl_iface.c	2021-06-09 10:58:59.208200552 -0400
++++ b/ctrl_iface.c	2020-11-03 09:08:48.057229002 -0500
+@@ -53,8 +53,6 @@
+ #include "lldp_util.h"
+ #include "messages.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ struct ctrl_dst {
+ 	struct ctrl_dst *next;
+ 	struct sockaddr_un addr;
+@@ -116,7 +114,7 @@ int clif_iface_module(struct clif_data *
+ 		return cmd_invalid;
+ 	}
+ 
+-	mod = find_module_by_id(&lldp_head, module_id);
++	mod = find_module_by_id(&lldp_mod_head, module_id);
+ 	if (mod && mod->ops && mod->ops->client_cmd)
+ 		return  (mod->ops->client_cmd)(clifd, from, fromlen,
+ 			 cmd_start, cmd_len, rbuf+strlen(rbuf), rlen);
+diff -upr a/dcb_protocol.c b/dcb_protocol.c
+--- a/dcb_protocol.c	2015-01-20 13:42:56.000000000 -0500
++++ b/dcb_protocol.c	2020-09-23 08:50:52.647813847 -0400
+@@ -75,7 +75,7 @@ void pg_insert(struct pghead *head, char
+ 	entry = (struct pg_store1 *)malloc(sizeof(struct pg_store1));
+ 	if (!entry)
+ 		return;
+-	strncpy(entry->ifname, ifname, sizeof(entry->ifname));
++	STRNCPY_TERMINATED(entry->ifname, ifname, sizeof(entry->ifname));
+ 	entry->second = store;
+ 	LIST_INSERT_HEAD(head, entry, entries);
+ }
+@@ -1100,7 +1100,7 @@ int dcbx_remove_adapter(char *device_nam
+ 	assert(device_name);
+ 	not_default = memcmp(DEF_CFG_STORE, device_name,
+ 		strlen(DEF_CFG_STORE));
+-	strncpy (devName, device_name, MAX_DEVICE_NAME_LEN);
++	STRNCPY_TERMINATED (devName, device_name, MAX_DEVICE_NAME_LEN);
+ 
+ 	if (not_default)
+ 		handle_opermode_true(device_name);
+@@ -2257,13 +2257,8 @@ cmd_status get_bwg_descrpt(char *device_
+ 
+ 	if ((it != NULL) &&
+ 		(bwgid < it->second->max_pgid_desc)) {
+-		size = (int)strlen(it->second->pgid_desc[bwgid]) +
+-			sizeof(char);  /* Localization OK */
+-		*name = (char*)malloc(size);
+-		if (*name != NULL) {
+-			strncpy(*name, it->second->pgid_desc[bwgid],
+-					size); /* Localization OK */
+-		} else {
++		*name = strdup(it->second->pgid_desc[bwgid]);
++		if (*name == NULL) {
+ 			goto Error;
+ 		}
+ 	} else {
+@@ -2272,11 +2267,9 @@ cmd_status get_bwg_descrpt(char *device_
+ 			size = (int)strlen(
+ 				attribs.descript.pgid_desc[bwgid]) +
+ 				sizeof(char);
+-			*name = (char*)malloc(size);
++			*name = (char*)calloc(size, sizeof(char));
+ 			if (*name != NULL) {
+-				strncpy(*name,
+-					attribs.descript.pgid_desc[bwgid],
+-					size); /* Localization OK */
++				memcpy(*name, attribs.descript.pgid_desc[bwgid], size - 1); /* Localization OK */
+ 			} else {
+ 				goto Error;
+ 			}
+diff -upr a/dcb_rule_chk.c b/dcb_rule_chk.c
+--- a/dcb_rule_chk.c	2015-01-20 13:42:56.000000000 -0500
++++ b/dcb_rule_chk.c	2020-09-23 08:50:52.647813847 -0400
+@@ -206,6 +206,8 @@ static int dcb_fixup_pg(struct pg_attrib
+ 					strict = 0;
+ 				if (be == cbe)
+ 					be = 0;
++				if (pgid < 0)
++					continue;
+ 			}
+ 
+ 			if (pg_done[i] == false) {
+diff -upr a/dcbtool.c b/dcbtool.c
+--- a/dcbtool.c	2015-01-20 13:42:56.000000000 -0500
++++ b/dcbtool.c	2020-09-23 08:50:52.647813847 -0400
+@@ -47,6 +47,7 @@
+ #define UNUSED __attribute__((__unused__))
+ 
+ static int show_raw;
++extern void close_history(void);
+ 
+ static const char *cli_version =
+ "dcbtool v" DCBTOOL_VERSION "\n"
+@@ -460,6 +461,7 @@ static void cli_interactive(int raw)
+ 			request(clif_conn, argc, argv, raw);
+ 		free(cmd);
+ 	} while (!cli_quit);
++	close_history();
+ }
+ 
+ static void cli_terminate(UNUSED int sig)
+diff -upr a/dcbtool_cmds.c b/dcbtool_cmds.c
+--- a/dcbtool_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/dcbtool_cmds.c	2020-09-23 08:50:52.647813847 -0400
+@@ -27,6 +27,7 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <ctype.h>
++#include <sys/types.h>
+ #include "clif.h"
+ #include "dcbtool.h"
+ #include "lldp_dcbx_cmds.h"
+@@ -38,7 +39,6 @@
+ 
+ static char *print_status(cmd_status status);
+ static char *get_pgdesc_args(int cmd);
+-static int hex2int(char *b);
+ static void free_cmd_args(char *args);
+ static char *get_dcb_args(void);
+ static char *get_dcbx_args(void);
+@@ -93,28 +93,6 @@ static char *print_status(cmd_status sta
+ 	return str;
+ }
+ 
+-/* assumes input is pointer to two hex digits */
+-/* returns -1 on error */
+-static int hex2int(char *b)
+-{
+-	int i;
+-	int n=0;
+-	int m;
+-	
+-	for (i=0,m=1; i<2; i++,m--) {
+-		if (isxdigit(*(b+i))) {
+-			if (*(b+i) <= '9')
+-				n |= (*(b+i) & 0x0f) << (4*m);
+-			else
+-				n |= ((*(b+i) & 0x0f) + 9) << (4*m);
+-		}
+-		else {
+-			return -1;
+-		}
+-	}
+-	return n;
+-}
+-
+ static char *get_dcb_args(void)
+ {
+ 	char buf[8];
+diff -upr a/docs/liblldp_clif-vdp22.3 b/docs/liblldp_clif-vdp22.3
+--- a/docs/liblldp_clif-vdp22.3	2015-01-20 13:42:56.000000000 -0500
++++ b/docs/liblldp_clif-vdp22.3	2020-11-03 09:08:48.058229019 -0500
+@@ -1,6 +1,6 @@
+ .TH liblldp_clif 3 "February 2014" "open-lldp" "Linux"
+ .SH NAME
+-clif_vsi,clif_vsievt,clif_vsiwait \- Manipulate VDP IEEE 802.1 Ratified Standard Assocications
++clif_vsi,clif_vsievt,clif_vsiwait \- Manipulate VDP IEEE 802.1 Ratified Standard Associations
+ .SH SYNOPSIS
+ #include "include/clif.h"
+ .sp 1
+diff -upr a/docs/lldptool.8 b/docs/lldptool.8
+--- a/docs/lldptool.8	2015-01-20 13:42:56.000000000 -0500
++++ b/docs/lldptool.8	2020-11-03 09:08:48.058229019 -0500
+@@ -160,9 +160,9 @@ Query the LLDP adminStatus for interface
+ 
+ .TP
+ Query the LLDP statistics for interface \fIeth3\fR
+-.B lldptool -S -i eth3 adminStatus
++.B lldptool -S -i eth3
+ .br
+-.B lldptool stats -i eth3 adminStatus
++.B lldptool stats -i eth3
+ 
+ .TP
+ Query the local TLVs which are being transmitted for a given interface:
+diff -upr a/event_iface.c b/event_iface.c
+--- a/event_iface.c	2015-01-20 13:42:56.000000000 -0500
++++ b/event_iface.c	2021-01-06 11:05:30.808649405 -0500
+@@ -77,7 +77,7 @@ static void event_if_decode_rta(int type
+ 		LLDPAD_DBG(" IFLA_BROADCAST\n");
+ 		break;
+ 	case IFLA_IFNAME:
+-		strncpy(d, (char *)RTA_DATA(rta), IFNAMSIZ);
++		STRNCPY_TERMINATED(d, (char *)RTA_DATA(rta), IFNAMSIZ);
+ 		LLDPAD_DBG(" IFLA_IFNAME\n");
+ 		LLDPAD_DBG("        device name is %s\n", d);
+ 		break;
+@@ -205,6 +205,9 @@ int oper_add_device(char *device_name)
+ 		port = newport;
+ 	} else if (is_bond(device_name) || !port->portEnabled)
+ 		reinit_port(device_name);
++	else if (port->portEnabled) {
++		return 0;
++	}
+ 
+ 	lldp_add_agent(device_name, NEAREST_BRIDGE);
+ 	lldp_add_agent(device_name, NEAREST_NONTPMR_BRIDGE);
+@@ -213,7 +216,7 @@ int oper_add_device(char *device_name)
+ 	LIST_FOREACH(agent, &port->agent_head, entry) {
+ 		LLDPAD_DBG("%s: calling ifup for agent %p.\n",
+ 			   __func__, agent);
+-		LIST_FOREACH(np, &lldp_head, lldp) {
++		LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 			if (np->ops->lldp_mod_ifup)
+ 				np->ops->lldp_mod_ifup(device_name, agent);
+ 		}
+@@ -280,7 +283,7 @@ static void event_if_decode_nlmsg(int ro
+ 			LIST_FOREACH(agent, &port->agent_head, entry) {
+ 				LLDPAD_DBG("%s: calling ifdown for agent %p.\n",
+ 					   __func__, agent);
+-				LIST_FOREACH(np, &lldp_head, lldp) {
++				LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 					ops = np->ops;
+ 					if (ops->lldp_mod_ifdown)
+ 						ops->lldp_mod_ifdown(device_name,
+@@ -415,7 +418,8 @@ event_iface_receive(int sock, UNUSED voi
+ int event_iface_init()
+ {
+ 	int fd;
+-	int rcv_size = MAX_PAYLOAD;
++	int rcv_size = 0;
++	socklen_t rcv_len = sizeof(int);
+ 	struct sockaddr_nl snl;
+ 
+ 	fd = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+@@ -423,10 +427,18 @@ int event_iface_init()
+ 	if (fd < 0)
+ 		return fd;
+ 
+-	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, sizeof(int)) < 0) {
++	/* is receive buffer size too small? */
++	if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, &rcv_len) < 0) {
+ 		close(fd);
+ 		return -EIO;
+ 	}
++	if (rcv_size < MIN_RCVBUF_SIZE) {
++		rcv_size = MIN_RCVBUF_SIZE >> 1;	/* we get back 2x what we set */
++		if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, rcv_len) < 0) {
++			close(fd);
++			return -EIO;
++		}
++	}
+ 
+ 	memset((void *)&snl, 0, sizeof(struct sockaddr_nl));
+ 	snl.nl_family = AF_NETLINK;
+diff -upr a/include/config.h b/include/config.h
+--- a/include/config.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/config.h	2020-09-23 08:50:52.647813847 -0400
+@@ -111,4 +111,7 @@ void destroy_cfg(void);
+ int check_cfg_file(void);
+ int check_for_old_file_format(void);
+ void init_ports(void);
++
++void config_ifkey(const char *name, char *ifkey);
++
+ #endif /* _CONFIG_H_ */
+diff -upr a/include/linux/if_link.h b/include/linux/if_link.h
+--- a/include/linux/if_link.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/linux/if_link.h	2020-09-23 08:50:52.648813865 -0400
+@@ -116,15 +116,34 @@ enum {
+ 	IFLA_STATS64,
+ 	IFLA_VF_PORTS,
+ 	IFLA_PORT_SELF,
+-        IFLA_AF_SPEC,
+-        IFLA_GROUP,             /* Group the device belongs to */
+-        IFLA_NET_NS_FD,
+-        IFLA_EXT_MASK,          /* Extended info mask, VFs, etc */
+-        IFLA_PROMISCUITY,       /* Promiscuity count: > 0 means acts PROMISC */
++	IFLA_AF_SPEC,
++	IFLA_GROUP,		/* Group the device belongs to */
++	IFLA_NET_NS_FD,
++	IFLA_EXT_MASK,		/* Extended info mask, VFs, etc */
++	IFLA_PROMISCUITY,	/* Promiscuity count: > 0 means acts PROMISC */
+ #define IFLA_PROMISCUITY IFLA_PROMISCUITY
+-        IFLA_NUM_TX_QUEUES,
+-        IFLA_NUM_RX_QUEUES,
+-        IFLA_CARRIER,
++	IFLA_NUM_TX_QUEUES,
++	IFLA_NUM_RX_QUEUES,
++	IFLA_CARRIER,
++	IFLA_PHYS_PORT_ID,
++	IFLA_CARRIER_CHANGES,
++	IFLA_PHYS_SWITCH_ID,
++	IFLA_LINK_NETNSID,
++	IFLA_PHYS_PORT_NAME,
++	IFLA_PROTO_DOWN,
++	IFLA_GSO_MAX_SEGS,
++	IFLA_GSO_MAX_SIZE,
++	IFLA_PAD,
++	IFLA_XDP,
++	IFLA_EVENT,
++	IFLA_NEW_NETNSID,
++	IFLA_IF_NETNSID,
++	IFLA_TARGET_NETNSID = IFLA_IF_NETNSID, /* new alias */
++	IFLA_CARRIER_UP_COUNT,
++	IFLA_CARRIER_DOWN_COUNT,
++	IFLA_NEW_IFINDEX,
++	IFLA_MIN_MTU,
++	IFLA_MAX_MTU,
+ 	__IFLA_MAX
+ };
+ 
+@@ -192,6 +211,8 @@ enum {
+ 	IFLA_INFO_KIND,
+ 	IFLA_INFO_DATA,
+ 	IFLA_INFO_XSTATS,
++	IFLA_INFO_SLAVE_KIND,
++	IFLA_INFO_SLAVE_DATA,
+ 	__IFLA_INFO_MAX,
+ };
+ 
+@@ -243,6 +264,69 @@ enum macvlan_mode {
+ 	MACVLAN_MODE_BRIDGE  = 4, /* talk to bridge ports directly */
+ };
+ 
++/* Bonding section */
++
++enum {
++	IFLA_BOND_UNSPEC,
++	IFLA_BOND_MODE,
++	IFLA_BOND_ACTIVE_SLAVE,
++	IFLA_BOND_MIIMON,
++	IFLA_BOND_UPDELAY,
++	IFLA_BOND_DOWNDELAY,
++	IFLA_BOND_USE_CARRIER,
++	IFLA_BOND_ARP_INTERVAL,
++	IFLA_BOND_ARP_IP_TARGET,
++	IFLA_BOND_ARP_VALIDATE,
++	IFLA_BOND_ARP_ALL_TARGETS,
++	IFLA_BOND_PRIMARY,
++	IFLA_BOND_PRIMARY_RESELECT,
++	IFLA_BOND_FAIL_OVER_MAC,
++	IFLA_BOND_XMIT_HASH_POLICY,
++	IFLA_BOND_RESEND_IGMP,
++	IFLA_BOND_NUM_PEER_NOTIF,
++	IFLA_BOND_ALL_SLAVES_ACTIVE,
++	IFLA_BOND_MIN_LINKS,
++	IFLA_BOND_LP_INTERVAL,
++	IFLA_BOND_PACKETS_PER_SLAVE,
++	IFLA_BOND_AD_LACP_RATE,
++	IFLA_BOND_AD_SELECT,
++	IFLA_BOND_AD_INFO,
++	IFLA_BOND_AD_ACTOR_SYS_PRIO,
++	IFLA_BOND_AD_USER_PORT_KEY,
++	IFLA_BOND_AD_ACTOR_SYSTEM,
++	IFLA_BOND_TLB_DYNAMIC_LB,
++	__IFLA_BOND_MAX,
++};
++
++#define IFLA_BOND_MAX	(__IFLA_BOND_MAX - 1)
++
++enum {
++	IFLA_BOND_AD_INFO_UNSPEC,
++	IFLA_BOND_AD_INFO_AGGREGATOR,
++	IFLA_BOND_AD_INFO_NUM_PORTS,
++	IFLA_BOND_AD_INFO_ACTOR_KEY,
++	IFLA_BOND_AD_INFO_PARTNER_KEY,
++	IFLA_BOND_AD_INFO_PARTNER_MAC,
++	__IFLA_BOND_AD_INFO_MAX,
++};
++
++#define IFLA_BOND_AD_INFO_MAX	(__IFLA_BOND_AD_INFO_MAX - 1)
++
++enum {
++	IFLA_BOND_SLAVE_UNSPEC,
++	IFLA_BOND_SLAVE_STATE,
++	IFLA_BOND_SLAVE_MII_STATUS,
++	IFLA_BOND_SLAVE_LINK_FAILURE_COUNT,
++	IFLA_BOND_SLAVE_PERM_HWADDR,
++	IFLA_BOND_SLAVE_QUEUE_ID,
++	IFLA_BOND_SLAVE_AD_AGGREGATOR_ID,
++	IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE,
++	IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE,
++	__IFLA_BOND_SLAVE_MAX,
++};
++
++#define IFLA_BOND_SLAVE_MAX	(__IFLA_BOND_SLAVE_MAX - 1)
++
+ /* SR-IOV virtual function management section */
+ 
+ enum {
+diff -upr a/include/lldp_basman_clif.h b/include/lldp_basman_clif.h
+--- a/include/lldp_basman_clif.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/lldp_basman_clif.h	2020-09-23 08:50:52.648813865 -0400
+@@ -31,7 +31,7 @@ struct lldp_module *basman_cli_register(
+ void basman_cli_unregister(struct lldp_module *);
+ int basman_print_tlv(u32, u16, char *);
+ 
+-#define ARG_IPV4_ADDR "ipv4"
+-#define ARG_IPV6_ADDR "ipv6"
+-
++#define ARG_IPV4_ADDR	"ipv4"
++#define ARG_IPV6_ADDR	"ipv6"
++#define ARG_TLVINFO	"info"
+ #endif
+diff -upr a/include/lldp.h b/include/lldp.h
+--- a/include/lldp.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/lldp.h	2020-09-23 08:50:52.648813865 -0400
+@@ -51,6 +51,13 @@ typedef __u64 u64;
+ 		__x > __y ? __x : __y;	\
+ 	 })
+ 
++/* Use strncpy with N-1 and ensure the string is terminated.  */
++#define STRNCPY_TERMINATED(DEST, SRC, N) \
++  do { \
++    strncpy (DEST, SRC, N - 1); \
++    DEST[N - 1] = '\0'; \
++  } while (false)
++
+ /*
+  * Organizationally Unique Identifier (OUI)
+  * http://standards.ieee.org/regauth/oui/oui.txt
+@@ -248,5 +255,11 @@ enum {
+ #define LLDP_EVB_DEFAULT_RTE				15
+ #define LLDP_EVB_DEFAULT_MAX_RTE			31
+ 
++#ifndef _MSC_VER
++#define STRUCT_PACKED(STRUCT) STRUCT __attribute__((__packed__))
++#else
++#define STRUCT_PACKED(STRUCT) __pragma(pack(push, 1)) STRUCT __pragma(pack(pop))
++#endif
++
+ void somethingChangedLocal(const char *ifname, int type);
+ #endif /* _LLDP_H */
+diff -upr a/include/lldp_mod.h b/include/lldp_mod.h
+--- a/include/lldp_mod.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/lldp_mod.h	2020-10-23 14:12:58.974289292 -0400
+@@ -96,7 +96,7 @@ struct lldp_module {
+ };
+ 
+ LIST_HEAD(lldp_head, lldp_module);
+-struct lldp_head lldp_head;
++extern struct lldp_head lldp_mod_head;
+ 
+ static inline struct lldp_module *find_module_by_id(struct lldp_head *head, int id)
+ {
+diff -upr a/include/lldp_tlv.h b/include/lldp_tlv.h
+--- a/include/lldp_tlv.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/lldp_tlv.h	2020-09-23 08:50:52.648813865 -0400
+@@ -104,8 +104,8 @@ struct packed_tlv *pack_tlv(struct unpac
+ struct unpacked_tlv *unpack_tlv(struct packed_tlv *tlv);
+ int pack_tlv_after(struct unpacked_tlv *, struct packed_tlv *, int);
+ 
+-struct unpacked_tlv *free_unpkd_tlv(struct unpacked_tlv *tlv);
+-struct packed_tlv *free_pkd_tlv(struct packed_tlv *tlv);
++void free_unpkd_tlv(struct unpacked_tlv *tlv);
++void free_pkd_tlv(struct packed_tlv *tlv);
+ struct unpacked_tlv *create_tlv(void);
+ struct packed_tlv *create_ptlv(void);
+ struct unpacked_tlv *bld_end_tlv(void);
+@@ -115,14 +115,18 @@ int tlv_ok(struct unpacked_tlv *tlv);
+ 
+ #define FREE_UNPKD_TLV(d, f) \
+ { \
+-	if ((d)->f) \
+-		(d)->f = free_unpkd_tlv((d)->f); \
++	if ((d)->f) {				 \
++		free_unpkd_tlv((d)->f);		 \
++		(d)->f = NULL;			 \
++	}					 \
+ }
+ 
+ #define FREE_PKD_TLV(d, f) \
+ { \
+-	if ((d)->f) \
+-		(d)->f = free_pkd_tlv((d)->f); \
++	if ((d)->f) {			       \
++		free_pkd_tlv((d)->f);	       \
++		(d)->f = NULL;		       \
++	}				       \
+ }
+ 
+ #define PACK_TLV_AFTER(t, p, l, g) 		\
+diff -upr a/include/lldptool.h b/include/lldptool.h
+--- a/include/lldptool.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/lldptool.h	2020-09-23 08:50:52.648813865 -0400
+@@ -29,9 +29,8 @@
+ 
+ #include "clif.h"
+ 
+-struct lldp_head lldp_cli_head;
++extern struct lldp_head lldp_cli_head;
+ 
+-int hex2int(char *b);
+ int clif_command(struct clif *clif, char *cmd, int raw);
+ void print_raw_message(char *msg, int print);
+ int parse_print_message(char *msg, int print);
+diff -upr a/include/lldp_util.h b/include/lldp_util.h
+--- a/include/lldp_util.h	2021-06-09 10:58:59.214200629 -0400
++++ b/include/lldp_util.h	2021-04-05 12:02:17.318590504 -0400
+@@ -119,6 +119,7 @@
+ 
+ int hexstr2bin(const char *hex, u8 *buf, size_t len);
+ int bin2hexstr(const u8 *hex, size_t hexlen, char *buf, size_t buflen);
++int hex2int(char *b);
+ 
+ int is_valid_lldp_device(const char *ifname);
+ int is_active(const char *ifname);
+@@ -149,8 +150,7 @@ int get_mautype(const char *);
+ int get_ifpflags(const char *);
+ int get_iftype(const char *);
+ int get_src_mac_from_bond(struct port *bond_port, char *ifname, u8 *addr);
+-int get_mac(const char *ifname, u8 mac[]);
+-int get_macstr(const char *ifname, char *addr, size_t size);
++int get_mac(const char *ifname, u8 mac[], bool perm_mac);
+ int get_saddr(const char *ifname, struct sockaddr_in *saddr);
+ int get_ipaddr(const char *ifname, struct in_addr *);
+ int get_ipaddrstr(const char *ifname, char *ipaddr, size_t size);
+diff -upr a/include/qbg_ecp22.h b/include/qbg_ecp22.h
+--- a/include/qbg_ecp22.h	2015-01-20 13:42:56.000000000 -0500
++++ b/include/qbg_ecp22.h	2020-09-23 08:50:52.649813883 -0400
+@@ -49,10 +49,10 @@ enum {					/* ECP Transmit states */
+ 	ECP22_TX_ERROR
+ };
+ 
+-enum {
++enum ecp22_mode {
+ 	ECP22_REQUEST = 0,
+ 	ECP22_ACK
+-} ecp22_mode;
++};
+ 
+ struct ecp22_hdr {		/* ECP22 header */
+ 	u16 ver_op_sub;		/* ECP22 version, operation, subtype */
+diff -upr a/include/qbg_vdpnl.h b/include/qbg_vdpnl.h
+--- a/include/qbg_vdpnl.h	2021-06-09 10:58:59.201200461 -0400
++++ b/include/qbg_vdpnl.h	2021-01-06 11:05:30.810649436 -0500
+@@ -33,6 +33,7 @@
+ #include <linux/if_ether.h>
+ 
+ #define	MAX_PAYLOAD	4096	/* Maximum Payload Size */
++#define	MIN_RCVBUF_SIZE	(MAX_PAYLOAD << 5)	/* SO_RCVBUF min */
+ 
+ enum {
+ 	vdpnl_nlf1 = 1,		/* Netlink message format 1 (draft 0.2) */
+diff -upr a/lldp/agent.c b/lldp/agent.c
+--- a/lldp/agent.c	2021-06-09 10:58:59.215200642 -0400
++++ b/lldp/agent.c	2021-01-06 11:05:30.811649451 -0500
+@@ -163,7 +163,7 @@ static void timer(UNUSED void *eloop_dat
+ 			run_rx_sm(port, agent);
+ 			update_rx_timers(agent);
+ 
+-			LIST_FOREACH(n, &lldp_head, lldp) {
++			LIST_FOREACH(n, &lldp_mod_head, lldp) {
+ 				if (n->ops && n->ops->timer)
+ 					n->ops->timer(port, agent);
+ 			}
+@@ -200,7 +200,7 @@ void clean_lldp_agents(void)
+ 			LLDPAD_DBG("Send shutdown frame on port %s\n",
+ 				port->ifname);
+ 			LIST_FOREACH(agent, &port->agent_head, entry) {
+-				process_tx_shutdown_frame(port, agent);
++				process_tx_shutdown_frame(port, agent, false);
+ 			}
+ 		} else {
+ 			LLDPAD_DBG("No shutdown frame is sent on port %s\n",
+diff -upr a/lldp/l2_packet.h b/lldp/l2_packet.h
+--- a/lldp/l2_packet.h	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp/l2_packet.h	2020-09-23 08:50:52.649813883 -0400
+@@ -37,7 +37,9 @@
+ #define IP2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
+ #define IPSTR "%02x:%02x:%02x:%02x:%02x:%02x"
+ 
++#ifndef ETH_P_LLDP
+ #define ETH_P_LLDP 0x88cc
++#endif
+ 
+ #define ETH_P_ECP	0x88b7		/* Draft 0.2 */
+ #define ETH_P_ECP22	0x8940		/* Ratified standard */
+@@ -56,12 +58,11 @@
+  */
+ struct l2_packet_data;
+ 
+-
+-struct l2_ethhdr {
++STRUCT_PACKED(struct l2_ethhdr {
+ 	u8 h_dest[ETH_ALEN];
+ 	u8 h_source[ETH_ALEN];
+ 	u16 h_proto;
+-} STRUCT_PACKED;
++});
+ 
+ /**
+  * l2_packet_init - Initialize l2_packet interface
+diff -upr a/lldp/l2_packet_linux.c b/lldp/l2_packet_linux.c
+--- a/lldp/l2_packet_linux.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp/l2_packet_linux.c	2020-09-23 08:50:52.649813883 -0400
+@@ -60,7 +60,7 @@ struct l2_packet_data {
+ 
+ int l2_packet_get_own_src_addr(struct l2_packet_data *l2, u8 *addr)
+ {
+-	if (is_san_mac(l2->san_mac_addr))
++	if (is_valid_mac(l2->san_mac_addr))
+ 		memcpy(addr, l2->san_mac_addr, ETH_ALEN);
+ 	else {
+ 		/* get an appropriate src MAC to use if the port is
+@@ -169,7 +169,7 @@ struct l2_packet_data * l2_packet_init(
+ 	if (l2 == NULL)
+ 		return NULL;
+ 	memset(l2, 0, sizeof(*l2));
+-	strncpy(l2->ifname, ifname, sizeof(l2->ifname));
++	STRNCPY_TERMINATED(l2->ifname, ifname, sizeof(l2->ifname));
+ 	l2->rx_callback = rx_callback;
+ 	l2->rx_callback_ctx = rx_callback_ctx;
+ 	l2->l2_hdr = l2_hdr;
+@@ -183,7 +183,7 @@ struct l2_packet_data * l2_packet_init(
+ 		return NULL;
+ 	}
+ 
+-	strncpy(ifr.ifr_name, l2->ifname, sizeof(ifr.ifr_name));
++	STRNCPY_TERMINATED(ifr.ifr_name, l2->ifname, sizeof(ifr.ifr_name));
+ 	if (ioctl(l2->fd, SIOCGIFINDEX, &ifr) < 0) {
+ 		perror("ioctl[SIOCGIFINDEX]");
+ 		close(l2->fd);
+diff -upr a/lldp/ports.c b/lldp/ports.c
+--- a/lldp/ports.c	2021-06-09 10:58:59.211200590 -0400
++++ b/lldp/ports.c	2020-12-07 13:15:10.579203256 -0500
+@@ -264,7 +264,7 @@ struct port *add_port(int ifindex, const
+ 	memset(newport, 0, sizeof(*newport));
+ 	newport->ifindex = ifindex;
+ 	newport->next = NULL;
+-	strncpy(newport->ifname, ifname, IFNAMSIZ);
++	strncpy(newport->ifname, ifname, IFNAMSIZ - 1);
+ 
+ 	newport->bond_master = is_bond(ifname);
+ 	/* Initialize relevant port variables */
+diff -upr a/lldp/rx.c b/lldp/rx.c
+--- a/lldp/rx.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp/rx.c	2021-06-09 11:00:02.480019469 -0400
+@@ -139,7 +139,16 @@ void rxProcessFrame(struct port *port, s
+ 	int err;
+ 	struct lldp_module *np;
+ 
+-	assert(agent->rx.framein && agent->rx.sizein);
++	if (!agent->rx.framein) {
++		LLDPAD_DBG("ERROR - agent framein not set, "
++			   "has the neighbour MAC changed? "
++			   "Ignoring packet.\n");
++		return;
++	}
++	if (!agent->rx.sizein) {
++		LLDPAD_DBG("Size-0 packet received, ignoring packet\n");
++		return;
++	}
+ 	agent->lldpdu = 0;
+ 	agent->rx.dupTlvs = 0;
+ 
+@@ -359,7 +368,7 @@ void rxProcessFrame(struct port *port, s
+ 		}
+ 
+ 		/* rx per lldp module */
+-		LIST_FOREACH(np, &lldp_head, lldp) {
++		LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 			if (!np->ops || !np->ops->lldp_mod_rchange)
+ 				continue;
+ 
+@@ -377,7 +386,7 @@ void rxProcessFrame(struct port *port, s
+ 		if (!tlv_stored) {
+ 			LLDPAD_INFO("%s: allocated TLV %u was not stored! %p\n",
+ 				   __func__, tlv->type, tlv);
+-			tlv = free_unpkd_tlv(tlv);
++			free_unpkd_tlv(tlv);
+ 			agent->stats.statsTLVsUnrecognizedTotal++;
+ 		}
+ 		tlv = NULL;
+@@ -402,7 +411,7 @@ u8 mibDeleteObjects(struct port *port, s
+ {
+ 	struct lldp_module *np;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops || !np->ops->lldp_mod_mibdelete)
+ 			continue;
+ 		np->ops->lldp_mod_mibdelete(port, agent);
+@@ -638,29 +647,21 @@ void rx_change_state(struct lldp_agent *
+ void clear_manifest(struct lldp_agent *agent)
+ {
+ 	if (agent->rx.manifest->mgmtadd)
+-		agent->rx.manifest->mgmtadd =
+-			free_unpkd_tlv(agent->rx.manifest->mgmtadd);
++		free_unpkd_tlv(agent->rx.manifest->mgmtadd);
+ 	if (agent->rx.manifest->syscap)
+-		agent->rx.manifest->syscap =
+-			free_unpkd_tlv(agent->rx.manifest->syscap);
++		free_unpkd_tlv(agent->rx.manifest->syscap);
+ 	if (agent->rx.manifest->sysdesc)
+-		agent->rx.manifest->sysdesc =
+-			free_unpkd_tlv(agent->rx.manifest->sysdesc);
++		free_unpkd_tlv(agent->rx.manifest->sysdesc);
+ 	if (agent->rx.manifest->sysname)
+-		agent->rx.manifest->sysname =
+-			free_unpkd_tlv(agent->rx.manifest->sysname);
++		free_unpkd_tlv(agent->rx.manifest->sysname);
+ 	if (agent->rx.manifest->portdesc)
+-		agent->rx.manifest->portdesc =
+-			free_unpkd_tlv(agent->rx.manifest->portdesc);
++		free_unpkd_tlv(agent->rx.manifest->portdesc);
+ 	if (agent->rx.manifest->ttl)
+-		agent->rx.manifest->ttl =
+-			free_unpkd_tlv(agent->rx.manifest->ttl);
++		free_unpkd_tlv(agent->rx.manifest->ttl);
+ 	if (agent->rx.manifest->portid)
+-		agent->rx.manifest->portid =
+-			free_unpkd_tlv(agent->rx.manifest->portid);
++		free_unpkd_tlv(agent->rx.manifest->portid);
+ 	if (agent->rx.manifest->chassis)
+-		agent->rx.manifest->chassis =
+-			free_unpkd_tlv(agent->rx.manifest->chassis);
++		free_unpkd_tlv(agent->rx.manifest->chassis);
+ 	free(agent->rx.manifest);
+ 	agent->rx.manifest = NULL;
+ }
+diff -upr a/lldp/states.h b/lldp/states.h
+--- a/lldp/states.h	2021-06-09 10:58:59.211200590 -0400
++++ b/lldp/states.h	2021-01-06 11:05:30.811649451 -0500
+@@ -85,7 +85,7 @@ u8 txFrame(struct port *port, struct lld
+ void run_tx_sm(struct port *, struct lldp_agent *);
+ void process_tx_initialize_sm(struct port *);
+ void process_tx_idle(struct lldp_agent *);
+-void process_tx_shutdown_frame(struct port *, struct lldp_agent *);
++void process_tx_shutdown_frame(struct port *, struct lldp_agent *, bool);
+ void process_tx_info_frame(struct port *, struct lldp_agent *);
+ void update_tx_timers(struct lldp_agent *);
+ void run_tx_timers_sm(struct port *, struct lldp_agent *);
+diff -upr a/lldp/tx.c b/lldp/tx.c
+--- a/lldp/tx.c	2021-06-09 10:58:59.211200590 -0400
++++ b/lldp/tx.c	2021-01-06 11:05:30.812649467 -0500
+@@ -71,7 +71,7 @@ bool mibConstrInfoLLDPDU(struct port *po
+ 	fb_offset += sizeof(struct l2_ethhdr);
+ 
+ 	/* Generic TLV Pack */
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops || !np->ops->lldp_mod_gettlv)
+ 			continue;
+ 
+@@ -83,7 +83,7 @@ bool mibConstrInfoLLDPDU(struct port *po
+ 			       ptlv->tlv, ptlv->size);
+ 			datasize += ptlv->size;
+ 			fb_offset += ptlv->size;
+-			ptlv =  free_pkd_tlv(ptlv);
++			free_pkd_tlv(ptlv);
+ 		}
+ 	}
+ 
+@@ -94,7 +94,7 @@ bool mibConstrInfoLLDPDU(struct port *po
+ 	memcpy(agent->tx.frameout + fb_offset, ptlv->tlv, ptlv->size);
+ 	datasize += ptlv->size;
+ 	fb_offset += ptlv->size;
+-	ptlv =  free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ 
+ 	if (datasize < ETH_MIN_DATA_LEN)
+ 		agent->tx.sizeout = ETH_ZLEN;
+@@ -104,7 +104,7 @@ bool mibConstrInfoLLDPDU(struct port *po
+ 	return true;
+ 
+ error:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ 	if (agent->tx.frameout)
+ 		free(agent->tx.frameout);
+ 	agent->tx.frameout = NULL;
+@@ -206,7 +206,7 @@ bool mibConstrShutdownLLDPDU(struct port
+ 	memcpy(agent->tx.frameout, (void *)&eth, sizeof(struct l2_ethhdr));
+ 	fb_offset += sizeof(struct l2_ethhdr);
+ 
+-	np = find_module_by_id(&lldp_head, LLDP_MOD_MAND);
++	np = find_module_by_id(&lldp_mod_head, LLDP_MOD_MAND);
+ 	if (!np)
+ 		goto error;
+ 	if (!np->ops || !np->ops->lldp_mod_gettlv)
+@@ -220,7 +220,7 @@ bool mibConstrShutdownLLDPDU(struct port
+ 		memcpy(agent->tx.frameout + fb_offset, ptlv->tlv, ptlv->size);
+ 		datasize += ptlv->size;
+ 		fb_offset += ptlv->size;
+-		ptlv =  free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
+ 	}
+ 
+ 	/* The End TLV marks the end of the LLDP PDU */
+@@ -230,7 +230,7 @@ bool mibConstrShutdownLLDPDU(struct port
+ 	memcpy(agent->tx.frameout + fb_offset, ptlv->tlv, ptlv->size);
+ 	datasize += ptlv->size;
+ 	fb_offset += ptlv->size;
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ 
+ 	if (datasize < ETH_MIN_DATA_LEN)
+ 		agent->tx.sizeout = ETH_ZLEN;
+@@ -239,7 +239,7 @@ bool mibConstrShutdownLLDPDU(struct port
+ 	return true;
+ 
+ error:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ 	if (agent->tx.frameout)
+ 		free(agent->tx.frameout);
+ 	agent->tx.frameout = NULL;
+@@ -270,7 +270,7 @@ void run_tx_sm(struct port *port, struct
+ 			process_tx_idle(agent);
+ 			break;
+ 		case TX_SHUTDOWN_FRAME:
+-			process_tx_shutdown_frame(port, agent);
++			process_tx_shutdown_frame(port, agent, true);
+ 			break;
+ 		case TX_INFO_FRAME:
+ 			process_tx_info_frame(port, agent);
+@@ -330,8 +330,19 @@ void process_tx_idle(UNUSED struct lldp_
+ 	return;
+ }
+ 
+-void process_tx_shutdown_frame(struct port *port, struct lldp_agent *agent)
++/* we ignore 'adminStatus' in the case that we have recently transitioned
++ * to the shutdown state (in the case of the 'tx' state change) to allow
++ * for transmitting the ttl==0 as required by the IEEE standard. */
++void process_tx_shutdown_frame(struct port *port, struct lldp_agent *agent,
++				bool ignoreStatus)
+ {
++	if (agent->adminStatus != enabledRxTx &&
++	    agent->adminStatus != enabledTxOnly) {
++		if (!ignoreStatus) {
++			return;
++		}
++	}
++
+ 	if (agent->timers.txShutdownWhile == 0) {
+ 		if (mibConstrShutdownLLDPDU(port, agent))
+ 			txFrame(port, agent);
+diff -upr a/lldp_8021qaz.c b/lldp_8021qaz.c
+--- a/lldp_8021qaz.c	2021-06-09 10:58:59.217200668 -0400
++++ b/lldp_8021qaz.c	2020-11-03 09:08:48.059229036 -0500
+@@ -48,8 +48,8 @@
+ #include "lldp_dcbx.h"
+ 
+ 
+-struct lldp_head lldp_head;
+-struct config_t lldpad_cfg;
++extern config_t lldpad_cfg;
++extern bool read_only_8021qaz;
+ 
+ static int ieee8021qaz_check_pending(struct port *port, struct lldp_agent *);
+ static void run_all_sm(struct port *port, struct lldp_agent *agent);
+@@ -83,7 +83,7 @@ static int ieee8021qaz_check_pending(str
+ 	if (!port->portEnabled)
+ 		return 0;
+ 
+-	iud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8021QAZ);
++	iud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8021QAZ);
+ 	if (iud) {
+ 		LIST_FOREACH(tlv, &iud->head, entry) {
+ 			if (!strncmp(port->ifname, tlv->ifname, IFNAMSIZ)) {
+@@ -111,14 +111,14 @@ struct lldp_module *ieee8021qaz_register
+ 
+ 	mod = malloc(sizeof(*mod));
+ 	if (!mod) {
+-		LLDPAD_ERR("Failed to malloc LLDP-8021QAZ module data");
++		LLDPAD_ERR("Failed to malloc LLDP-8021QAZ module data\n");
+ 		goto out_err;
+ 	}
+ 
+ 	iud = malloc(sizeof(*iud));
+ 	if (!iud) {
+ 		free(mod);
+-		LLDPAD_ERR("Failed to malloc LLDP-8021QAZ module user data");
++		LLDPAD_ERR("Failed to malloc LLDP-8021QAZ module user data\n");
+ 		goto out_err;
+ 	}
+ 	memset((void *) iud, 0, sizeof(struct ieee8021qaz_user_data));
+@@ -142,7 +142,7 @@ struct ieee8021qaz_tlvs *ieee8021qaz_dat
+ 	struct ieee8021qaz_user_data *iud;
+ 	struct ieee8021qaz_tlvs *tlv = NULL;
+ 
+-	iud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8021QAZ);
++	iud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8021QAZ);
+ 	if (iud) {
+ 		LIST_FOREACH(tlv, &iud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+@@ -396,7 +396,7 @@ static int read_cfg_file(char *ifname, s
+ 	return 0;
+ }
+ 
+-inline int get_prio_map(u32 prio_map, int prio)
++static int get_prio_map(u32 prio_map, int prio)
+ {
+ 	if (prio > 7)
+ 		return 0;
+@@ -404,7 +404,7 @@ inline int get_prio_map(u32 prio_map, in
+ 	return (prio_map >> (4 * (7-prio))) & 0xF;
+ }
+ 
+-inline void set_prio_map(u32 *prio_map, u8 prio, int tc)
++static void set_prio_map(u32 *prio_map, u8 prio, int tc)
+ {
+ 	u32 mask = ~(0xffffffff & (0xF << (4 * (7-prio))));
+ 	*prio_map &= mask;
+@@ -590,7 +590,7 @@ void ieee8021qaz_ifup(char *ifname, stru
+ 	memset(tlvs->rx, 0, sizeof(*tlvs->rx));
+ 
+ 	/* Initializing the ieee8021qaz_tlvs struct */
+-	strncpy(tlvs->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(tlvs->ifname, ifname, IFNAMSIZ);
+ 	tlvs->port = port;
+ 	tlvs->ieee8021qazdu = 0;
+ 	l2_packet_get_own_src_addr(port->l2, tlvs->local_mac);
+@@ -628,7 +628,7 @@ void ieee8021qaz_ifup(char *ifname, stru
+ 	LIST_INIT(&tlvs->app_head);
+ 	read_cfg_file(port->ifname, agent, tlvs);
+ 
+-	iud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8021QAZ);
++	iud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8021QAZ);
+ 	LIST_INSERT_HEAD(&iud->head, tlvs, entry);
+ 
+ initialized:
+@@ -959,6 +959,9 @@ static int del_ieee_hw(const char *ifnam
+ 			   .dcb_pad = 0
+ 			  };
+ 
++	if (read_only_8021qaz)
++		return 0;
++
+ 	nlsocket = nl_socket_alloc();
+ 	if (!nlsocket) {
+ 		LLDPAD_WARN("%s: %s: nl_handle_alloc failed\n",
+@@ -1042,6 +1045,9 @@ static int set_ieee_hw(const char *ifnam
+ 			   .dcb_pad = 0
+ 			  };
+ 
++	if (read_only_8021qaz)
++		return 0;
++
+ 	nlsocket = nl_socket_alloc();
+ 	if (!nlsocket) {
+ 		LLDPAD_WARN("%s: %s: nl_handle_alloc failed\n",
+@@ -1618,15 +1624,15 @@ static void clear_ieee8021qaz_rx(struct
+ 		return;
+ 
+ 	if (tlvs->rx->ieee8021qaz)
+-		tlvs->rx->ieee8021qaz = free_unpkd_tlv(tlvs->rx->ieee8021qaz);
++		free_unpkd_tlv(tlvs->rx->ieee8021qaz);
+ 	if (tlvs->rx->etscfg)
+-		tlvs->rx->etscfg = free_unpkd_tlv(tlvs->rx->etscfg);
++		free_unpkd_tlv(tlvs->rx->etscfg);
+ 	if (tlvs->rx->etsrec)
+-		tlvs->rx->etsrec = free_unpkd_tlv(tlvs->rx->etsrec);
++		free_unpkd_tlv(tlvs->rx->etsrec);
+ 	if (tlvs->rx->pfc)
+-		tlvs->rx->pfc = free_unpkd_tlv(tlvs->rx->pfc);
++		free_unpkd_tlv(tlvs->rx->pfc);
+ 	if (tlvs->rx->app)
+-		tlvs->rx->app =	free_unpkd_tlv(tlvs->rx->app);
++		free_unpkd_tlv(tlvs->rx->app);
+ 
+ 	free(tlvs->rx);
+ 	tlvs->rx = NULL;
+@@ -2014,13 +2020,13 @@ static void ieee8021qaz_free_rx(struct i
+ 		return;
+ 
+ 	if (rx->etscfg)
+-		rx->etscfg = free_unpkd_tlv(rx->etscfg);
++		free_unpkd_tlv(rx->etscfg);
+ 	if (rx->etsrec)
+-		rx->etsrec = free_unpkd_tlv(rx->etsrec);
++		free_unpkd_tlv(rx->etsrec);
+ 	if (rx->pfc)
+-		rx->pfc = free_unpkd_tlv(rx->pfc);
++		free_unpkd_tlv(rx->pfc);
+ 	if (rx->app)
+-		rx->app = free_unpkd_tlv(rx->app);
++		free_unpkd_tlv(rx->app);
+ 
+ 	return;
+ }
+@@ -2106,9 +2112,9 @@ static void ieee8021qaz_free_tlv(struct
+ 		return;
+ 
+ 	if (tlvs->ets)
+-		tlvs->ets = free_ets_tlv(tlvs->ets);
++		free_ets_tlv(tlvs->ets);
+ 	if (tlvs->pfc)
+-		tlvs->pfc = free_pfc_tlv(tlvs->pfc);
++		free_pfc_tlv(tlvs->pfc);
+ 
+ 	/* Remove _all_ existing application data */
+ 	LIST_FOREACH(np, &tlvs->app_head, entry)
+@@ -2172,7 +2178,7 @@ int ieee8021qaz_tlvs_rxed(const char *if
+ 	struct ieee8021qaz_user_data *iud;
+ 	struct ieee8021qaz_tlvs *tlv = NULL;
+ 
+-	iud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8021QAZ);
++	iud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8021QAZ);
+ 	if (iud) {
+ 		LIST_FOREACH(tlv, &iud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+@@ -2191,7 +2197,7 @@ int ieee8021qaz_check_active(const char
+ 	struct ieee8021qaz_user_data *iud;
+ 	struct ieee8021qaz_tlvs *tlv = NULL;
+ 
+-	iud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8021QAZ);
++	iud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8021QAZ);
+ 	if (iud) {
+ 		LIST_FOREACH(tlv, &iud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+diff -upr a/lldp_8021qaz_clif.c b/lldp_8021qaz_clif.c
+--- a/lldp_8021qaz_clif.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_8021qaz_clif.c	2020-09-23 08:50:52.650813901 -0400
+@@ -251,40 +251,70 @@ static void ieee8021qaz_print_pfc_tlv(UN
+ 
+ static void ieee8021qaz_print_app_tlv(u16 len, char *info)
+ {
+-	u8 offset = 2;
+-	u8 app;
+-	u16 proto;
++	u8 app, app_idx, app_prio, app_sel;
++	u16 proto, offset = 2;
++	u8 dscp[MAX_USER_PRIORITIES][MAX_APP_ENTRIES];
++	u8 dscp_count[MAX_USER_PRIORITIES] = {0};
++	u8 i, j;
++	bool first_app = true;
+ 
+ 	while (offset < len*2) {
+ 		hexstr2bin(info + offset, &app, 1);
+ 		hexstr2bin(info + offset + 2, (u8 *)&proto, 2);
+ 
+-		if (offset > 6)
+-			printf("\t");
+-		printf("App#%i:\n", offset/6);
+-		printf("\t Priority: %i\n", (app & 0xE0) >> 5);
+-		printf("\t Sel: %i\n", app & 0x07);
+-		switch (app & 0x07) {
+-		case 1:
+-			printf("\t Ethertype: 0x%04x\n", ntohs(proto));
+-			break;
+-		case 2:
+-			printf("\t {S}TCP Port: %i\n", ntohs(proto));
+-			break;
+-		case 3:
+-			printf("\t UDP or DCCP Port: %i\n", ntohs(proto));
+-			break;
+-		case 4:
+-			printf("\t TCP/STCP/UDP/DCCP Port: %i\n", ntohs(proto));
+-			break;
+-		default:
+-			printf("\t Reserved Port: %i\n", ntohs(proto));
+-			break;
++		app_idx = offset/6;
++		app_prio = (app & 0xE0) >> 5;
++		app_sel = app & 0x07;
++
++		// Selector five is DSCP. Save value to print table at the end
++		if (app_sel == 5) {
++			dscp[app_prio][dscp_count[app_prio]] = ntohs(proto) & 0x3F;
++			dscp_count[app_prio]++;
++		} else {
++			if (first_app)
++				first_app = false;
++			else
++				printf("\t");
++			printf("App# %3i \t Prio %1i \t Sel %1i \t P-ID", 
++				app_idx, app_prio, app_sel);
++	
++			switch (app_sel) {
++			case 1:
++				printf("\t Ethertype: 0x%04x\n", ntohs(proto));
++				break;
++			case 2:
++				printf("\t {S}TCP Port: %i\n", ntohs(proto));
++				break;
++			case 3:
++				printf("\t UDP or DCCP Port: %i\n", ntohs(proto));
++				break;
++			case 4:
++				printf("\t TCP/STCP/UDP/DCCP Port: %i\n", ntohs(proto));
++				break;
++			default:
++				printf("\t Reserved Port: %i\n", ntohs(proto));
++				break;
++			}
+ 		}
+ 
+-		printf("\n");
+ 		offset += 6;
+ 	}
++
++	for(i=0; i<MAX_USER_PRIORITIES; i++) {
++		if (dscp_count[i] == 0)
++			continue;
++
++		if (first_app)
++		        first_app = false;
++		else
++		        printf("\t");
++		printf("Prio:%i \t dscp: ", i);
++
++		for(j=0; j<dscp_count[i]; j++) {
++			printf(" %02i,", dscp[i][j]);
++		}
++		printf("\b \n");
++	}
+ }
+ 
+ int ieee8021qaz_print_tlv(u32 tlvid, u16 len, char *info)
+diff -upr a/lldp_8021qaz_cmds.c b/lldp_8021qaz_cmds.c
+--- a/lldp_8021qaz_cmds.c	2021-06-09 10:58:59.218200681 -0400
++++ b/lldp_8021qaz_cmds.c	2020-09-23 08:50:52.651813919 -0400
+@@ -665,7 +665,7 @@ _set_arg_tcbw(struct cmd *cmd, char *arg
+ 
+ 	strncat(obuf, "tcbw = ", obuf_len - strlen(obuf) - 1);
+ 	for (i = 0; i < 8; i++) {
+-		char cat[5];
++		char cat[6];
+ 		snprintf(cat, sizeof(cat), "%i%% ", percent[i]);
+ 		printf("%i%% ", percent[i]);
+ 		strncat(obuf, cat, obuf_len - strlen(obuf) - 1);
+diff -upr a/lldp_8023.c b/lldp_8023.c
+--- a/lldp_8023.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_8023.c	2020-11-03 09:08:48.059229036 -0500
+@@ -39,8 +39,6 @@
+ #include "lldp_8023_clif.h"
+ #include "lldp_8023_cmds.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ struct tlv_info_8023_maccfg {
+ 	u8 oui[3];
+ 	u8 sub;
+@@ -84,7 +82,7 @@ static struct ieee8023_data *ieee8023_da
+ 	struct ieee8023_user_data *ud;
+ 	struct ieee8023_data *bd = NULL;
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8023);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8023);
+ 	if (ud) {
+ 		LIST_FOREACH(bd, &ud->head, entry) {
+ 			if (!strncmp(ifname, bd->ifname, IFNAMSIZ) &&
+@@ -401,7 +399,7 @@ struct packed_tlv *ieee8023_gettlv(struc
+ 	PACK_TLV_AFTER(bd->maxfs, ptlv, size, out_free);
+ 	return ptlv;
+ out_free:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ out_err:
+ 	LLDPAD_DBG("%s:%s: failed\n", __func__, port->ifname);
+ 	return NULL;
+@@ -447,7 +445,7 @@ void ieee8023_ifup(char *ifname, struct
+ 		goto out_err;
+ 	}
+ 	memset(bd, 0, sizeof(struct ieee8023_data));
+-	strncpy(bd->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(bd->ifname, ifname, IFNAMSIZ);
+ 	bd->agenttype = agent->type;
+ 
+ 	if (ieee8023_bld_tlv(bd, agent)) {
+@@ -456,7 +454,7 @@ void ieee8023_ifup(char *ifname, struct
+ 		goto out_err;
+ 	}
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_8023);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_8023);
+ 	LIST_INSERT_HEAD(&ud->head, bd, entry);
+ 	LLDPAD_INFO("%s:port %s added\n", __func__, ifname);
+ 	return;
+@@ -472,13 +470,13 @@ struct lldp_module *ieee8023_register(vo
+ 
+ 	mod = malloc(sizeof(*mod));
+ 	if (!mod) {
+-		LLDPAD_ERR("failed to malloc LLDP 802.3 module data");
++		LLDPAD_ERR("failed to malloc LLDP 802.3 module data\n");
+ 		goto out_err;
+ 	}
+ 	ud = malloc(sizeof(struct ieee8023_user_data));
+ 	if (!ud) {
+ 		free(mod);
+-		LLDPAD_ERR("failed to malloc LLDP 802.3 module user data");
++		LLDPAD_ERR("failed to malloc LLDP 802.3 module user data\n");
+ 		goto out_err;
+ 	}
+ 	LIST_INIT(&ud->head);
+diff -upr a/lldpad.c b/lldpad.c
+--- a/lldpad.c	2021-06-09 10:58:59.208200552 -0400
++++ b/lldpad.c	2021-04-05 12:02:17.320590536 -0400
+@@ -80,10 +80,13 @@ struct lldp_module *(*register_tlv_table
+ 	NULL,
+ };
+ 
++struct lldp_head lldp_mod_head;
++
+ char *cfg_file_name = NULL;
+ bool daemonize = 0;
+ int loglvl = LOG_WARNING;
+ int omit_tstamp;
++bool read_only_8021qaz = false;
+ 
+ static const char *lldpad_version =
+ "lldpad v" VERSION_STR "\n"
+@@ -97,7 +100,7 @@ static void init_modules(void)
+ 	struct lldp_module *premod = NULL;
+ 	int i = 0;
+ 
+-	LIST_INIT(&lldp_head);
++	LIST_INIT(&lldp_mod_head);
+ 	for (i = 0; register_tlv_table[i]; i++) {
+ 		module = register_tlv_table[i]();
+ 		if (!module)
+@@ -105,7 +108,7 @@ static void init_modules(void)
+ 		if (premod)
+ 			LIST_INSERT_AFTER(premod, module, lldp);
+ 		else
+-			LIST_INSERT_HEAD(&lldp_head, module, lldp);
++			LIST_INSERT_HEAD(&lldp_mod_head, module, lldp);
+ 		premod = module;
+ 	}
+ }
+@@ -114,9 +117,9 @@ void deinit_modules(void)
+ {
+ 	struct lldp_module *module;
+ 
+-	while (lldp_head.lh_first != NULL) {
+-		module = lldp_head.lh_first;
+-		LIST_REMOVE(lldp_head.lh_first, lldp);
++	while (lldp_mod_head.lh_first != NULL) {
++		module = lldp_mod_head.lh_first;
++		LIST_REMOVE(lldp_mod_head.lh_first, lldp);
+ 		module->ops->lldp_mod_unregister(module);
+ 	}
+ }
+@@ -136,7 +139,8 @@ static void usage(void)
+ 		"   -t  omit timestamps in log messages\n"
+ 		"   -v  show version\n"
+ 		"   -f  use configfile instead of default\n"
+-		"   -V  set syslog level\n");
++		"   -V  set syslog level\n"
++		"   -R  run 8021qaz module in read_only mode\n");
+ 
+ 	exit(1);
+ }
+@@ -236,7 +240,7 @@ int main(int argc, char *argv[])
+ 	int rc = 1;
+ 
+ 	for (;;) {
+-		c = getopt(argc, argv, "hdksptvf:V:");
++		c = getopt(argc, argv, "hdksptvf:RV:");
+ 		if (c < 0)
+ 			break;
+ 		switch (c) {
+@@ -259,6 +263,9 @@ int main(int argc, char *argv[])
+ 		case 'p':
+ 			pid_file = 0;
+ 			break;
++		case 'R':
++			read_only_8021qaz = true;
++			break;
+ 		case 't':
+ 			omit_tstamp = 1;
+ 			break;
+diff -upr a/lldpad.service b/lldpad.service
+--- a/lldpad.service	2015-01-20 13:42:56.000000000 -0500
++++ b/lldpad.service	2020-09-23 08:50:52.655813990 -0400
+@@ -1,9 +1,11 @@
+ [Unit]
+ Description=Link Layer Discovery Protocol Agent Daemon.
+ After=syslog.target network.target
++Requires=lldpad.socket
+ 
+ [Service]
+ Type=simple
++Restart=always
+ ExecStart=/usr/sbin/lldpad -t
+ ExecReload=/bin/kill -HUP $MAINPID
+ 
+diff -upr a/lldpad.socket b/lldpad.socket
+--- a/lldpad.socket	2015-01-20 13:42:56.000000000 -0500
++++ b/lldpad.socket	2020-09-23 08:50:52.655813990 -0400
+@@ -1,3 +1,6 @@
++[Unit]
++Description=Link Layer Discovery Protocol Agent Socket.
++
+ [Socket]
+ ListenDatagram=@/com/intel/lldpad
+ PassCredentials=true
+diff -upr a/lldpad.spec.in b/lldpad.spec.in
+--- a/lldpad.spec.in	2015-01-20 13:42:56.000000000 -0500
++++ b/lldpad.spec.in	2020-09-23 08:50:52.655813990 -0400
+@@ -10,9 +10,9 @@ Source0:        http://downloads.sourcef
+ BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+ 
+ # BuildRequires:  
+-Requires(post):   chkconfig
+-Requires(preun):  chkconfig initscripts
+-Requires(postun): initscripts
++Requires(post):   @SPEC_BUILD_REQUIRES_POST@
++Requires(preun):  @SPEC_BUILD_REQUIRES_PREUN@
++Requires(postun): @SPEC_BUILD_REQUIRES_POSTUN@
+ 
+ %description
+ This package contains the Linux user space daemon and configuration tool for
+@@ -46,20 +46,36 @@ rm -rf $RPM_BUILD_ROOT
+ 
+ 
+ %post
+-/sbin/chkconfig --add lldpad 
++if [ -e /etc/init.d/%{name} ] && [ -e /sbin/chkconfig ]; then
++	/sbin/chkconfig --add %{name}
++fi
++if type systemctl >/dev/null 2>&1; then
++	# Scriplet only runs preset. Run enable/start manually
++	%systemd_post %{name}.socket %{name}.service
++fi
+ 
+ %preun
+ if [ $1 = 0 ]; then
+-        /sbin/service lldpad stop
+-        /sbin/chkconfig --del lldpad 
++	if [ -e /etc/init.d/%{name} ] && [ -e /sbin/chkconfig ]; then
++		/sbin/service %{name} stop
++		/sbin/chkconfig --del %{name}
++	fi
++	if type systemctl >/dev/null 2>&1; then
++		%systemd_preun %{name}.service %{name}.socket
++	fi
+ fi
+ 
+ %postun
+ if [ $1 = 1 ]; then
+-        /sbin/service lldpad condrestart
++	# Package upgrade, not uninstall
++	if [ -e /etc/init.d/%{name} ] && [ -e /sbin/chkconfig ]; then
++		/sbin/service %{name} condrestart
++	fi
++	if type systemctl >/dev/null 2>&1; then
++		%systemd_postun_with_restart %{name}.socket %{name}.service
++	fi
+ fi
+ 
+-
+ %files
+ %defattr(-,root,root,-)
+ %doc COPYING
+@@ -67,11 +83,13 @@ fi
+ %doc ChangeLog
+ %{_sbindir}/*
+ %dir /var/lib/lldpad
+-%{_sysconfdir}/init.d/lldpad
++@SPEC_FILE_LLDPAD_SERVICE@
++@SPEC_FILE_LLDPAD_SOCKET@
+ %{_sysconfdir}/bash_completion.d/lldpad
+ %{_sysconfdir}/bash_completion.d/lldptool
+ %{_mandir}/man8/*
+ %{_libdir}/liblldp_clif.*
++%{_mandir}/man3/liblldp_clif-vdp22.*
+ 
+ %files devel
+ %defattr(-,root,root,-)
+diff -upr a/lldp_basman.c b/lldp_basman.c
+--- a/lldp_basman.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_basman.c	2020-11-03 09:08:48.059229036 -0500
+@@ -75,8 +75,6 @@ struct tlv_info_manaddr {
+ 	struct tlv_info_maoid o;
+ } __attribute__ ((__packed__));
+ 
+-extern struct lldp_head lldp_head;
+-
+ static const struct lldp_mod_ops basman_ops =  {
+ 	.lldp_mod_register 	= basman_register,
+ 	.lldp_mod_unregister 	= basman_unregister,
+@@ -91,7 +89,7 @@ static struct basman_data *basman_data(c
+ 	struct basman_user_data *bud;
+ 	struct basman_data *bd = NULL;
+ 
+-	bud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_BASIC);
++	bud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_BASIC);
+ 	if (bud) {
+ 		LIST_FOREACH(bd, &bud->head, entry) {
+ 			if (!strncmp(ifname, bd->ifname, IFNAMSIZ) &&
+@@ -636,7 +634,7 @@ struct packed_tlv *basman_gettlv(struct
+ 		PACK_TLV_AFTER(bd->manaddr[i], ptlv, size, out_free);
+ 	return ptlv;
+ out_free:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ out_err:
+ 	LLDPAD_DBG("%s:%s: failed\n", __func__, port->ifname);
+ 	return NULL;
+@@ -679,7 +677,7 @@ void basman_ifup(char *ifname, struct ll
+ 		goto out_err;
+ 	}
+ 	memset(bd, 0, sizeof(struct basman_data));
+-	strncpy(bd->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(bd->ifname, ifname, IFNAMSIZ);
+ 	bd->agenttype = agent->type;
+ 
+ 	if (basman_bld_tlv(bd, agent)) {
+@@ -688,7 +686,7 @@ void basman_ifup(char *ifname, struct ll
+ 		goto out_err;
+ 	}
+ 
+-	bud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_BASIC);
++	bud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_BASIC);
+ 	LIST_INSERT_HEAD(&bud->head, bd, entry);
+ 	LLDPAD_DBG("%s:port %s added\n", __func__, ifname);
+ 	return;
+diff -upr a/lldp_basman_cmds.c b/lldp_basman_cmds.c
+--- a/lldp_basman_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_basman_cmds.c	2020-09-23 08:50:52.652813936 -0400
+@@ -51,6 +51,9 @@ static int test_arg_ipv6(struct cmd *, c
+ static int get_arg_tlvtxenable(struct cmd *, char *, char *, char *, int);
+ static int set_arg_tlvtxenable(struct cmd *, char *, char *, char *, int);
+ static int test_arg_tlvtxenable(struct cmd *, char *, char *, char *, int);
++static int get_arg_info(struct cmd *, char *, char *, char *, int);
++static int set_arg_info(struct cmd *, char *, char *, char *, int);
++static int test_arg_info(struct cmd *, char *, char *, char *, int);
+ 
+ static struct arg_handlers arg_handlers[] = {
+ 	{	.arg = ARG_IPV4_ADDR, .arg_class = TLV_ARG,
+@@ -65,6 +68,10 @@ static struct arg_handlers arg_handlers[
+ 		.handle_get = get_arg_tlvtxenable,
+ 		.handle_set = set_arg_tlvtxenable,
+ 		.handle_test = test_arg_tlvtxenable },
++	{	.arg = ARG_TLVINFO, .arg_class = TLV_ARG,
++		.handle_get = get_arg_info,
++		.handle_set = set_arg_info,
++		.handle_test = test_arg_info },
+ 	{	.arg = 0 }
+ };
+ 
+@@ -166,6 +173,89 @@ static int test_arg_tlvtxenable(struct c
+ 	return _set_arg_tlvtxenable(cmd, arg, argvalue, obuf, obuf_len, true);
+ }
+ 
++static int get_arg_info(struct cmd *cmd, char *arg, UNUSED char *argvalue,
++			char *obuf, int obuf_len)
++{
++	const char *info_str = NULL;
++	char arg_path[256];
++
++	if (cmd->cmd != cmd_gettlv)
++		return cmd_invalid;
++
++	switch (cmd->tlvid) {
++	case PORT_DESCRIPTION_TLV:
++	case SYSTEM_NAME_TLV:
++	case SYSTEM_DESCRIPTION_TLV:
++	case SYSTEM_CAPABILITIES_TLV:
++	case MANAGEMENT_ADDRESS_TLV:
++		snprintf(arg_path, sizeof(arg_path), "%s%08x.%s",
++			 TLVID_PREFIX, cmd->tlvid, arg);
++
++		get_config_setting(cmd->ifname, cmd->type, arg_path,
++				   &info_str, CONFIG_TYPE_STRING);
++		break;
++	case INVALID_TLVID:
++		return cmd_invalid;
++	default:
++		return cmd_not_applicable;
++	}
++
++	if (info_str)
++		snprintf(obuf, obuf_len, "%02x%s%04x%s",
++			 (unsigned int)strlen(arg), arg,
++			 (unsigned int)strlen(info_str), info_str);
++
++	return cmd_success;
++}
++
++static int _set_arg_info(struct cmd *cmd, UNUSED char *arg, char *argvalue, 
++			 char *obuf, int obuf_len, bool test)
++{
++	if (cmd->cmd != cmd_settlv)
++		return cmd_invalid;
++
++	switch (cmd->tlvid) {
++	case PORT_DESCRIPTION_TLV:
++	case SYSTEM_NAME_TLV:
++	case SYSTEM_DESCRIPTION_TLV:
++	case SYSTEM_CAPABILITIES_TLV:
++	case MANAGEMENT_ADDRESS_TLV:
++		break;
++	case INVALID_TLVID:
++		return cmd_invalid;
++	default:
++		return cmd_not_applicable;
++	}
++
++        if (strlen(argvalue) < 1)
++		return cmd_invalid;
++
++	if (test)
++		return cmd_success;
++
++	if (set_config_tlvinfo_str(cmd->ifname, cmd->type, 
++				   cmd->tlvid, argvalue))
++		return cmd_failed;
++
++	snprintf(obuf, obuf_len, "enableTx = %s\n", argvalue);
++
++	somethingChangedLocal(cmd->ifname, cmd->type);
++
++	return cmd_success;
++}
++
++static int set_arg_info(struct cmd *cmd, char *arg, char *argvalue, 
++			char *obuf, int obuf_len)
++{
++	return _set_arg_info(cmd, arg, argvalue, obuf, obuf_len, false);
++}
++
++static int test_arg_info(struct cmd *cmd, char *arg, char *argvalue,
++			 char *obuf, int obuf_len)
++{
++	return _set_arg_info(cmd, arg, argvalue, obuf, obuf_len, true);
++}
++
+ struct arg_handlers *basman_get_arg_handlers()
+ {
+ 	return &arg_handlers[0];
+diff -upr a/lldp_dcbx.c b/lldp_dcbx.c
+--- a/lldp_dcbx.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_dcbx.c	2020-10-23 14:12:58.975289310 -0400
+@@ -129,7 +129,7 @@ struct dcbx_tlvs *dcbx_data(const char *
+ 	struct dcbd_user_data *dud;
+ 	struct dcbx_tlvs *tlv = NULL;
+ 
+-	dud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_DCBX);
++	dud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_DCBX);
+ 	if (dud) {
+ 		LIST_FOREACH(tlv, &dud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+@@ -148,7 +148,7 @@ int dcbx_tlvs_rxed(const char *ifname, s
+ 	if (agent->type != NEAREST_BRIDGE)
+ 		return 0;
+ 
+-	dud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_DCBX);
++	dud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_DCBX);
+ 	if (dud) {
+ 		LIST_FOREACH(tlv, &dud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+@@ -172,7 +172,7 @@ int dcbx_check_active(const char *ifname
+ 	struct dcbd_user_data *dud;
+ 	struct dcbx_tlvs *tlv = NULL;
+ 
+-	dud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_DCBX);
++	dud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_DCBX);
+ 	if (dud) {
+ 		LIST_FOREACH(tlv, &dud->head, entry) {
+ 			if (!strncmp(tlv->ifname, ifname, IFNAMSIZ))
+@@ -194,6 +194,8 @@ int dcbx_bld_tlv(struct port *newport, s
+ 		return 0;
+ 
+ 	tlvs = dcbx_data(newport->ifname);
++	if (!tlvs)
++		return 0;
+ 
+ 	get_config_setting(newport->ifname, agent->type, ARG_ADMINSTATUS,
+ 			  &adminstatus, CONFIG_TYPE_INT);
+@@ -283,20 +285,20 @@ void dcbx_free_manifest(struct dcbx_mani
+ 		return;
+ 
+ 	if (manifest->dcbx1)
+-		manifest->dcbx1 = free_unpkd_tlv(manifest->dcbx1);
++		free_unpkd_tlv(manifest->dcbx1);
+ 	if (manifest->dcbx2)
+-		manifest->dcbx2 = free_unpkd_tlv(manifest->dcbx2);
++		free_unpkd_tlv(manifest->dcbx2);
+ 	if (manifest->dcbx_ctrl)
+-		manifest->dcbx_ctrl = free_unpkd_tlv(manifest->dcbx_ctrl);
++		free_unpkd_tlv(manifest->dcbx_ctrl);
+ 	if (manifest->dcbx_pg)
+-		manifest->dcbx_pg = free_unpkd_tlv(manifest->dcbx_pg);
++		free_unpkd_tlv(manifest->dcbx_pg);
+ 	if (manifest->dcbx_pfc)
+-		manifest->dcbx_pfc = free_unpkd_tlv(manifest->dcbx_pfc);
++		free_unpkd_tlv(manifest->dcbx_pfc);
+ 	if (manifest->dcbx_app)
+-		manifest->dcbx_app = free_unpkd_tlv(manifest->dcbx_app);
++		free_unpkd_tlv(manifest->dcbx_app);
+ 	if (manifest->dcbx_llink)
+-		manifest->dcbx_llink = free_unpkd_tlv(manifest->dcbx_llink);
+-
++		free_unpkd_tlv(manifest->dcbx_llink);
++	free(manifest);
+ 	return;
+ }
+ 
+@@ -305,44 +307,27 @@ void dcbx_free_tlv(struct dcbx_tlvs *tlv
+ 	if (!tlvs)
+ 		return;
+ 
+-	if (tlvs->control != NULL) {
+-		tlvs->control = free_unpkd_tlv(tlvs->control);
+-	}
+-
+-	if (tlvs->pg1 != NULL) {
+-		tlvs->pg1 = free_unpkd_tlv(tlvs->pg1);
+-	}
+-
+-	if (tlvs->pg2 != NULL) {
+-		tlvs->pg2 = free_unpkd_tlv(tlvs->pg2);
+-	}
+-
+-	if (tlvs->pfc1 != NULL) {
+-		tlvs->pfc1 = free_unpkd_tlv(tlvs->pfc1);
+-	}
+-
+-	if (tlvs->pfc2 != NULL) {
+-		tlvs->pfc2 = free_unpkd_tlv(tlvs->pfc2);
+-	}
+-
+-	if (tlvs->app1 != NULL) {
+-		tlvs->app1 = free_unpkd_tlv(tlvs->app1);
+-	}
+-
+-	if (tlvs->app2 != NULL)
+-		tlvs->app2 = free_unpkd_tlv(tlvs->app2);
++	if (tlvs->control)
++		free_unpkd_tlv(tlvs->control);
++	if (tlvs->pg1)
++		free_unpkd_tlv(tlvs->pg1);
++	if (tlvs->pg2)
++		free_unpkd_tlv(tlvs->pg2);
++	if (tlvs->pfc1)
++		free_unpkd_tlv(tlvs->pfc1);
++	if (tlvs->pfc2)
++		free_unpkd_tlv(tlvs->pfc2);
++	if (tlvs->app1)
++		free_unpkd_tlv(tlvs->app1);
++	if (tlvs->app2)
++		free_unpkd_tlv(tlvs->app2);
++	if (tlvs->llink)
++		free_unpkd_tlv(tlvs->llink);
++	if (tlvs->dcbx1)
++		free_unpkd_tlv(tlvs->dcbx1);
++	if (tlvs->dcbx2)
++		free_unpkd_tlv(tlvs->dcbx2);
+ 
+-	if (tlvs->llink != NULL) {
+-		tlvs->llink = free_unpkd_tlv(tlvs->llink);
+-	}
+-
+-	if (tlvs->dcbx1 != NULL) {
+-		tlvs->dcbx1 = free_unpkd_tlv(tlvs->dcbx1);
+-	}
+-
+-	if (tlvs->dcbx2 != NULL) {
+-		tlvs->dcbx2 = free_unpkd_tlv(tlvs->dcbx2);
+-	}
+ 	return;
+ }
+ 
+@@ -362,6 +347,7 @@ struct packed_tlv* dcbx_gettlv(struct po
+ 		return NULL;
+ 
+ 	dcbx_free_tlv(tlvs);
++	memset(tlvs, 0, sizeof(struct dcbx_tlvs));
+ 
+ 	dcbx_bld_tlv(port, agent);
+ 	if (tlvs->dcbx_st == DCBX_SUBTYPE2) {
+@@ -386,7 +372,6 @@ static void dcbx_free_data(struct dcbd_u
+ 			LIST_REMOVE(dd, entry);
+ 			dcbx_free_tlv(dd);
+ 			dcbx_free_manifest(dd->manifest);
+-			free(dd->manifest);
+ 			free(dd);
+ 		}
+ 	}
+@@ -408,7 +393,7 @@ struct lldp_module * dcbx_register(void)
+ 	if (get_dcbx_version(&dcbx_version)) {
+ 		gdcbx_subtype = dcbx_version;
+ 	} else {
+-		LLDPAD_ERR("failed to get DCBX version");
++		LLDPAD_ERR("failed to get DCBX version\n");
+ 		goto out_err;
+ 	}
+ 
+@@ -505,7 +490,7 @@ void dcbx_ifup(char *ifname, struct lldp
+ 	ifindex = get_ifidx(ifname);
+ 	port = port_find_by_ifindex(ifindex);
+ 
+-	dud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_DCBX);
++	dud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_DCBX);
+ 	tlvs = dcbx_data(ifname);
+ 
+ 	if (!port)
+@@ -582,7 +567,7 @@ void dcbx_ifup(char *ifname, struct lldp
+ 	memset(manifest, 0, sizeof(*manifest));
+ 
+ 	tlvs->manifest = manifest;
+-	strncpy(tlvs->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(tlvs->ifname, ifname, IFNAMSIZ);
+ 	tlvs->port = port;
+ 	tlvs->dcbdu = 0;
+ 	tlvs->dcbx_st = gdcbx_subtype & MASK_DCBX_FORCE;
+@@ -654,7 +639,6 @@ void dcbx_ifdown(char *device_name, stru
+ 	LIST_REMOVE(tlvs, entry);
+ 	dcbx_free_tlv(tlvs);
+ 	dcbx_free_manifest(tlvs->manifest);
+-	free(tlvs->manifest);
+ 	free(tlvs);
+ }
+ 
+@@ -664,26 +648,19 @@ void clear_dcbx_manifest(struct dcbx_tlv
+ 		return;
+ 
+ 	if (dcbx->manifest->dcbx_llink)
+-		dcbx->manifest->dcbx_llink =
+-			free_unpkd_tlv(dcbx->manifest->dcbx_llink);
++		free_unpkd_tlv(dcbx->manifest->dcbx_llink);
+ 	if (dcbx->manifest->dcbx_app)
+-		dcbx->manifest->dcbx_app =
+-			free_unpkd_tlv(dcbx->manifest->dcbx_app);
++		free_unpkd_tlv(dcbx->manifest->dcbx_app);
+ 	if (dcbx->manifest->dcbx_pfc)
+-		dcbx->manifest->dcbx_pfc =
+-			free_unpkd_tlv(dcbx->manifest->dcbx_pfc);
++		free_unpkd_tlv(dcbx->manifest->dcbx_pfc);
+ 	if (dcbx->manifest->dcbx_pg)
+-		dcbx->manifest->dcbx_pg =
+-			free_unpkd_tlv(dcbx->manifest->dcbx_pg);
++		free_unpkd_tlv(dcbx->manifest->dcbx_pg);
+ 	if (dcbx->manifest->dcbx_ctrl)
+-		dcbx->manifest->dcbx_ctrl =
+-			free_unpkd_tlv(dcbx->manifest->dcbx_ctrl);
++		free_unpkd_tlv(dcbx->manifest->dcbx_ctrl);
+ 	if (dcbx->manifest->dcbx1)
+-		dcbx->manifest->dcbx1 =
+-			free_unpkd_tlv(dcbx->manifest->dcbx1);
++		free_unpkd_tlv(dcbx->manifest->dcbx1);
+ 	if (dcbx->manifest->dcbx2)
+-		dcbx->manifest->dcbx2 =
+-			free_unpkd_tlv(dcbx->manifest->dcbx2);
++		free_unpkd_tlv(dcbx->manifest->dcbx2);
+ 	free(dcbx->manifest);
+ 	dcbx->manifest = NULL;
+ }
+diff -upr a/lldp_dcbx_cfg.c b/lldp_dcbx_cfg.c
+--- a/lldp_dcbx_cfg.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_dcbx_cfg.c	2020-09-23 08:50:52.652813936 -0400
+@@ -99,12 +99,15 @@ static config_setting_t *construct_new_s
+ 	config_setting_t *tmp2_setting = NULL;
+ 	char abuf[32];
+ 	int i;
++	char device_name_sanitized[IFNAMSIZ];
+ 
+ 	dcbx_setting = config_lookup(&lldpad_cfg, DCBX_SETTING);
+ 	if (!dcbx_setting)
+ 		return NULL;
+ 
+-	eth_setting = config_setting_add(dcbx_setting, device_name,
++	config_ifkey(device_name, device_name_sanitized);
++
++	eth_setting = config_setting_add(dcbx_setting, device_name_sanitized,
+ 		CONFIG_TYPE_GROUP);
+ 	if (!eth_setting)
+ 		goto set_error;
+@@ -371,11 +374,13 @@ static int _set_persistent(char *device_
+ 	config_setting_t *setting_value = NULL;
+ 	char abuf[2*DCB_MAX_TLV_LENGTH + 1];
+ 	int result, i;
++	char device_name_sanitized[IFNAMSIZ];
+ 
+ 	dcbx_setting = config_lookup(&lldpad_cfg, DCBX_SETTING);
++	config_ifkey(device_name, device_name_sanitized);
+ 	if (dcbx_setting)
+ 		eth_settings = config_setting_get_member(dcbx_setting,
+-							 device_name);
++							 device_name_sanitized);
+ 
+ 	/* init the internal data store for device_name */
+ 	if (NULL == eth_settings) {
+@@ -698,7 +703,7 @@ static int _set_persistent(char *device_
+ 	return 0;
+ 
+ set_error:
+-	LLDPAD_ERR("update of config file %s failed for %s",
++	LLDPAD_ERR("update of config file %s failed for %s\n",
+ 		   cfg_file_name, device_name);
+ 	return cmd_failed;
+ }
+@@ -782,22 +787,20 @@ int get_persistent(char *device_name, fu
+ 	int result = cmd_failed, i;
+ 	int results[MAX_USER_PRIORITIES];
+ 	int len;
+-	char abuf[32];
++	char abuf[32], device_name_sanitized[IFNAMSIZ];
+ 
+ 	memset(attribs, 0, sizeof(*attribs));
+ 	dcbx_setting = config_lookup(&lldpad_cfg, DCBX_SETTING);
++
++	config_ifkey(device_name, device_name_sanitized);
+ 	if (dcbx_setting)
+-		eth_settings = config_setting_get_member(dcbx_setting,
+-							 device_name);
++		eth_settings = config_setting_get_member(dcbx_setting, 
++							 device_name_sanitized);
+ 
+ 	/* init the internal data store for device_name */
+ 	result = get_default_persistent(device_name, attribs);
+-	if (NULL == eth_settings) {
+-		assert(memcmp(device_name, DEF_CFG_STORE, 
+-			strlen(DEF_CFG_STORE)));
+-
++	if (NULL == eth_settings)
+ 		return result;
+-	}
+ 
+ 	/* Read pfc setting */
+ 	if (get_int_config(eth_settings, "pfc_enable", TYPE_BOOL,
+@@ -1071,13 +1074,16 @@ int get_dcb_enable_state(char *ifname, i
+ 	int rc = EINVAL;
+ 	config_setting_t *settings = NULL;
+ 	char path[sizeof(DCBX_SETTING) + IFNAMSIZ + 16];
++	char ifkey[IFNAMSIZ];
++
++	config_ifkey(ifname, ifkey);
+ 
+ 	memset(path, 0, sizeof(path));
+-	snprintf(path, sizeof(path), "%s.%s.dcb_enable", DCBX_SETTING, ifname);
++	snprintf(path, sizeof(path), "%s.%s.dcb_enable", DCBX_SETTING, ifkey); 
+ 	settings = config_lookup(&lldpad_cfg, path);
+ 	if (!settings) {
+ 		LLDPAD_INFO("### %s:%s:failed on %s\n", __func__, ifname, path);
+-		snprintf(path, sizeof(path), "%s.dcb_enable", ifname);
++		snprintf(path, sizeof(path), "%s.dcb_enable", ifkey); 
+ 		settings = config_lookup(&lldpad_cfg, path);
+ 		if (!settings) {
+ 			LLDPAD_INFO("### %s:%s:failed again %s\n", __func__, ifname, path);
+diff -upr a/lldp_dcbx_cmds.c b/lldp_dcbx_cmds.c
+--- a/lldp_dcbx_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_dcbx_cmds.c	2020-09-23 08:50:52.653813954 -0400
+@@ -259,8 +259,12 @@ static cmd_status set_dcb_state(char *po
+ 
+ 	if (ilen == (off + CFG_DCB_DLEN)) {
+ 		state = (*(ibuf+off+DCB_STATE)) ^ '0';
+-		set_hw_state(port_id, state);
+-		rval = save_dcb_enable_state(port_id, state);
++
++		if(set_hw_state(port_id, state) < 0) {
++		    rval = cmd_not_capable;
++		} else {
++		    rval = save_dcb_enable_state(port_id, state);
++		}
+ 	} else {
+ 		printf("error - setcommand has invalid argument length\n");
+ 		rval = cmd_bad_params;
+@@ -943,6 +947,10 @@ static int set_pg_config(pg_attribs *pg_
+ 	bool used[MAX_BANDWIDTH_GROUPS];
+ 	bool uppcts_changed = false;
+ 
++	/* If PG is disabled, skip changing any other attributes */
++	if (!(pg_data->protocol.Enable))
++		goto done;
++
+ 	plen=strlen(port_id);
+ 	off = DCB_PORT_OFF + plen + CFG_LEN;
+ 
+@@ -1067,6 +1075,7 @@ static int set_pg_config(pg_attribs *pg_
+ 		return status;
+ 	}
+ 
++done:
+ 	is_pfc = get_pfc(port_id, &pfc_data);
+ 	if (is_pfc == cmd_success)
+ 		status = put_pg(port_id, pg_data, &pfc_data);
+diff -upr a/lldp_dcbx_nl.c b/lldp_dcbx_nl.c
+--- a/lldp_dcbx_nl.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_dcbx_nl.c	2020-09-23 08:50:52.653813954 -0400
+@@ -152,16 +152,17 @@ static int send_msg(struct nlmsghdr *nlh
+ {
+ 	struct sockaddr_nl nladdr;
+ 	void *buf = (void *)nlh;
+-	int r, len = nlh->nlmsg_len;
++	int r;
+ 
+ 	if (nlh == NULL)
+ 		return 1;
+ 
+ 	memset(&nladdr, 0, sizeof(nladdr));
+ 	nladdr.nl_family = AF_NETLINK;
+-	
++
+ 	do {
+-		r = sendto(nl_sd, buf, len, 0, (struct sockaddr *)&nladdr,
++		r = sendto(nl_sd, buf, nlh->nlmsg_len, 0,
++			   (struct sockaddr *)&nladdr,
+ 			sizeof(nladdr));
+ 		LLDPAD_DBG("send_msg: sendto = %d\n", r);
+ 
+@@ -561,7 +562,7 @@ int get_dcb_numtcs(const char *ifname, u
+ 
+ 	seq = nlh->nlmsg_seq;
+ 
+-	strncpy(name, ifname, sizeof(name));
++	STRNCPY_TERMINATED (name, ifname, sizeof(name));
+ 	add_rta(nlh, DCB_ATTR_IFNAME, (void *)name, strlen(name) + 1);
+ 	rta_parent = add_rta(nlh, DCB_ATTR_NUMTCS, NULL, 0);
+ 
+@@ -801,17 +802,6 @@ int set_hw_app(char *ifname, appgroup_at
+ 	return(recv_msg(DCB_CMD_SAPP, DCB_ATTR_APP, seq));
+ }
+ 
+-int run_cmd(char *cmd, ...)
+-{
+-	char cbuf[128];
+-	va_list args;
+-
+-	va_start(args, cmd);
+-	vsprintf(cbuf, cmd, args);
+-	va_end(args);
+-	return system(cbuf);
+-}
+-
+ int set_hw_all(char *ifname)
+ {
+ 	struct nlmsghdr *nlh;
+diff -upr a/lldp_evb22.c b/lldp_evb22.c
+--- a/lldp_evb22.c	2021-06-09 10:58:59.218200681 -0400
++++ b/lldp_evb22.c	2020-11-03 09:08:48.060229053 -0500
+@@ -37,14 +37,12 @@
+ #include "messages.h"
+ #include "config.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ struct evb22_data *evb22_data(char *ifname, enum agent_type type)
+ {
+ 	struct evb22_user_data *ud;
+ 	struct evb22_data *ed = NULL;
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_EVB22);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_EVB22);
+ 	if (ud) {
+ 		LIST_FOREACH(ed, &ud->head, entry) {
+ 			if (!strncmp(ifname, ed->ifname, IFNAMSIZ) &&
+@@ -450,10 +448,10 @@ static void evb22_ifup(char *ifname, str
+ 			   __func__, ifname, agent->type, sizeof *ed);
+ 		return;
+ 	}
+-	strncpy(ed->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(ed->ifname, ifname, IFNAMSIZ);
+ 	ed->agenttype = agent->type;
+ 	evb22_init_tlv(ed, agent);
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_EVB22);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_EVB22);
+ 	LIST_INSERT_HEAD(&ud->head, ed, entry);
+ 	LLDPAD_DBG("%s:%s agent %d added\n", __func__, ifname, agent->type);
+ }
+diff -upr a/lldp_evb22_cmds.c b/lldp_evb22_cmds.c
+--- a/lldp_evb22_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_evb22_cmds.c	2020-09-23 08:50:52.653813954 -0400
+@@ -225,7 +225,7 @@ int evb22_conf_enabletx(char *ifname, en
+ 				TLVID(OUI_IEEE_8021Qbg22, LLDP_EVB22_SUBTYPE));
+ }
+ 
+-static int evb22_cmdok(struct cmd *cmd, cmd_status expected)
++static int evb22_cmdok(struct cmd *cmd, int expected)
+ {
+ 	if (cmd->cmd != expected)
+ 		return cmd_invalid;
+diff -upr a/lldp_evb.c b/lldp_evb.c
+--- a/lldp_evb.c	2021-06-09 10:58:59.217200668 -0400
++++ b/lldp_evb.c	2021-04-05 12:02:17.318590504 -0400
+@@ -36,14 +36,12 @@
+ #include "messages.h"
+ #include "config.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ struct evb_data *evb_data(char *ifname, enum agent_type type)
+ {
+ 	struct evb_user_data *ud;
+ 	struct evb_data *ed = NULL;
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_EVB);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_EVB);
+ 	if (ud) {
+ 		LIST_FOREACH(ed, &ud->head, entry) {
+ 			if (!strncmp(ifname, ed->ifname, IFNAMSIZ) &&
+@@ -342,12 +340,12 @@ static void evb_ifup(char *ifname, struc
+ 			   __func__, ifname, agent->type, sizeof(*ed));
+ 		return;
+ 	}
+-	strncpy(ed->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(ed->ifname, ifname, IFNAMSIZ);
+ 	ed->agenttype = agent->type;
+ 
+ 	evb_init_tlv(ed, agent);
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_EVB);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_EVB);
+ 	LIST_INSERT_HEAD(&ud->head, ed, entry);
+ 	LLDPAD_DBG("%s:%s agent %d added\n", __func__, ifname, agent->type);
+ }
+diff -upr a/lldp_evb_cmds.c b/lldp_evb_cmds.c
+--- a/lldp_evb_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_evb_cmds.c	2020-09-23 08:50:52.653813954 -0400
+@@ -163,7 +163,7 @@ int evb_conf_enabletx(char *ifname, enum
+ 	return is_tlv_txenabled(ifname, type, TLVID_8021Qbg(LLDP_EVB_SUBTYPE));
+ }
+ 
+-static int evb_cmdok(struct cmd *cmd, cmd_status expected)
++static int evb_cmdok(struct cmd *cmd, int expected)
+ {
+ 	if (cmd->cmd != expected)
+ 		return cmd_invalid;
+diff -upr a/lldp_mand.c b/lldp_mand.c
+--- a/lldp_mand.c	2021-06-09 10:58:59.211200590 -0400
++++ b/lldp_mand.c	2020-11-03 09:08:48.061229070 -0500
+@@ -42,8 +42,6 @@
+ #include "lldp/l2_packet.h"
+ #include "lldp_tlv.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ static const struct lldp_mod_ops mand_ops = {
+ 	.lldp_mod_register 	= mand_register,
+ 	.lldp_mod_unregister 	= mand_unregister,
+@@ -59,7 +57,7 @@ struct mand_data *mand_data(const char *
+ 	struct mand_user_data *mud;
+ 	struct mand_data *md = NULL;
+ 
+-	mud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_MAND);
++	mud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_MAND);
+ 	if (mud) {
+ 		LIST_FOREACH(md, &mud->head, entry) {
+ 			if (!strncmp(ifname, md->ifname, IFNAMSIZ) &&
+@@ -100,7 +98,7 @@ static int mand_bld_end_tlv(struct mand_
+ static int mand_bld_mac_chassis(struct mand_data *md,
+ 				struct tlv_info_chassis *chassis)
+ {
+-	get_mac(md->ifname, chassis->id.mac);
++	get_mac(md->ifname, chassis->id.mac, false);
+ 	if (is_valid_mac(chassis->id.mac))
+ 		chassis->sub = CHASSIS_ID_MAC_ADDRESS;
+ 	return sizeof(chassis->id.mac) + sizeof(chassis->sub);
+@@ -112,11 +110,13 @@ static int mand_bld_ip_chassis(struct ma
+ {
+ 	unsigned int len;
+ 
+-	if (!get_ipaddr(md->ifname, &chassis->id.na.ip.v4)) {
++	void *v4_ptr = &chassis->id.na.ip.v4;
++	void *v6_ptr = &chassis->id.na.ip.v6;
++	if (!get_ipaddr(md->ifname, v4_ptr)) {
+ 		chassis->sub = CHASSIS_ID_NETWORK_ADDRESS;
+ 		chassis->id.na.type = MANADDR_IPV4;
+ 		len = sizeof(chassis->id.na.ip.v4);
+-	} else  if (!get_ipaddr6(md->ifname, &chassis->id.na.ip.v6)) {
++	} else  if (!get_ipaddr6(md->ifname, v6_ptr)) {
+ 		chassis->sub = CHASSIS_ID_NETWORK_ADDRESS;
+ 		chassis->id.na.type = MANADDR_IPV6;
+ 		len = sizeof(chassis->id.na.ip.v6);
+@@ -217,6 +217,7 @@ static int mand_bld_chassis_tlv(struct m
+ 			if (length > 0)
+ 				break;
+ 			/* Fall through on IP error */
++			/* FALLTHROUGH */ 
+ 		case CHASSIS_ID_MAC_ADDRESS:
+ 		default:
+ 			length = mand_bld_mac_chassis(md, &chassis);
+@@ -234,6 +235,7 @@ static int mand_bld_chassis_tlv(struct m
+ 			if (length > 0)
+ 				break;
+ 			/* Fall through on IP error */
++			/* FALLTHROUGH */
+ 		case LLDP_MED_DEVTYPE_NETWORK_CONNECTIVITY:
+ 		default:
+ 			length =  mand_bld_ifname_chassis(md, &chassis);
+@@ -361,16 +363,18 @@ static int mand_bld_portid_tlv(struct ma
+ 	switch (subtype) {
+ 	default:
+ 	case PORT_ID_MAC_ADDRESS:
+-		get_mac(md->ifname, portid.id.mac);
++		get_mac(md->ifname, portid.id.mac, true);
+ 		if (is_valid_mac(portid.id.mac)) {
+ 			portid.sub = PORT_ID_MAC_ADDRESS;
+ 			length = sizeof(portid.id.mac) +
+ 				 sizeof(portid.sub);
+ 			break;
+ 		}
+-	case PORT_ID_NETWORK_ADDRESS:
++		/* FALLTHROUGH */
++	case PORT_ID_NETWORK_ADDRESS: {
+ 		/* uses ipv4 first */
+-		if (!get_ipaddr(md->ifname, &portid.id.na.ip.v4)) {
++		void *v4_ptr = &portid.id.na.ip.v4;
++		if (!get_ipaddr(md->ifname, v4_ptr)) {
+ 			portid.sub = PORT_ID_NETWORK_ADDRESS;
+ 			portid.id.na.type = MANADDR_IPV4;
+ 			length = sizeof(portid.id.na.type) +
+@@ -379,7 +383,8 @@ static int mand_bld_portid_tlv(struct ma
+ 			break;
+ 		}
+ 		/* ipv4 fails, get ipv6 */
+-		if (!get_ipaddr6(md->ifname, &portid.id.na.ip.v6)) {
++		void *v6_ptr = &portid.id.na.ip.v6;
++		if (!get_ipaddr6(md->ifname, v6_ptr)) {
+ 			portid.sub = PORT_ID_NETWORK_ADDRESS;
+ 			portid.id.na.type = MANADDR_IPV6;
+ 			length = sizeof(portid.id.na.type) +
+@@ -387,6 +392,8 @@ static int mand_bld_portid_tlv(struct ma
+ 				 sizeof(portid.sub);
+ 			break;
+ 		}
++  }
++		/* FALLTHROUGH */
+ 	case PORT_ID_INTERFACE_NAME:
+ 		portid.sub = PORT_ID_INTERFACE_NAME;
+ 		strncpy((char *)portid.id.ifname, md->ifname, IFNAMSIZ);
+@@ -508,9 +515,11 @@ struct packed_tlv *mand_gettlv(struct po
+ 	}
+ 
+ 	err = mand_bld_tlv(md, agent);
+-	if (err)
++	if (err) {
+ 		LLDPAD_DBG("%s:%s: building mandotory TLV error.\n",
+ 			   __func__, port->ifname);
++		goto out_err;
++	}
+ 
+ 	size = TLVSIZE(md->chassis)
+ 		+ TLVSIZE(md->portid)
+@@ -532,7 +541,7 @@ struct packed_tlv *mand_gettlv(struct po
+ 	PACK_TLV_AFTER(md->ttl, ptlv, size, out_free);
+ 	return ptlv;
+ out_free:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ out_err:
+ 	LLDPAD_DBG("%s:%s: failed\n", __func__, port->ifname);
+ 	return NULL;
+@@ -596,10 +605,10 @@ void mand_ifup(char *ifname, struct lldp
+ 			return;
+ 		}
+ 		memset(md, 0, sizeof(struct mand_data));
+-		strncpy(md->ifname, ifname, IFNAMSIZ);
++		STRNCPY_TERMINATED(md->ifname, ifname, IFNAMSIZ);
+ 		md->agenttype = agent->type;
+ 
+-		mud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_MAND);
++		mud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_MAND);
+ 		LIST_INSERT_HEAD(&mud->head, md, entry);
+ 	}
+ 
+@@ -627,7 +636,7 @@ struct lldp_module *mand_register(void)
+ 		LLDPAD_ERR("failed to malloc LLDP Mandatory module data\n");
+ 		goto out_err;
+ 	}
+-	mud = malloc(sizeof(struct mand_user_data));
++    mud = malloc(sizeof(struct mand_user_data));
+ 	if (!mud) {
+ 		free(mod);
+ 		LLDPAD_ERR("failed to malloc LLDP Mandatory module user data\n");
+@@ -635,8 +644,8 @@ struct lldp_module *mand_register(void)
+ 	}
+ 	LIST_INIT(&mud->head);
+  	mod->id = LLDP_MOD_MAND;
++    mod->data = mud;
+ 	mod->ops = &mand_ops;
+-	mod->data = mud;
+ 	LLDPAD_INFO("%s:done\n", __func__);
+ 	return mod;
+ out_err:
+diff -upr a/lldp_mand_cmds.c b/lldp_mand_cmds.c
+--- a/lldp_mand_cmds.c	2021-06-09 10:58:59.211200590 -0400
++++ b/lldp_mand_cmds.c	2020-10-23 14:12:58.975289310 -0400
+@@ -44,6 +44,9 @@
+ #include "lldp/states.h"
+ #include "lldp_util.h"
+ #include "messages.h"
++#include "lldp_8021qaz.h"
++
++extern bool read_only_8021qaz;
+ 
+ static int get_arg_adminstatus(struct cmd *, char *, char *, char *, int);
+ static int set_arg_adminstatus(struct cmd *, char *, char *, char *, int);
+@@ -463,7 +466,7 @@ int handle_get_args(struct cmd *cmd, UNU
+ 	nbuf = obuf;
+ 	nbuf_len = obuf_len;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops->get_arg_handler)
+ 			continue;
+ 		if (!(ah = np->ops->get_arg_handler()))
+@@ -493,7 +496,7 @@ int handle_get_arg(struct cmd *cmd, char
+ 	struct arg_handlers *ah;
+ 	int rval, status = cmd_not_applicable;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops->get_arg_handler)
+ 			continue;
+ 		if (!(ah = np->ops->get_arg_handler()))
+@@ -590,11 +593,14 @@ int handle_test_arg(struct cmd *cmd, cha
+ 	struct arg_handlers *ah;
+ 	int rval, status = cmd_not_applicable;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops->get_arg_handler)
+ 			continue;
+ 		if (!(ah = np->ops->get_arg_handler()))
+ 			continue;
++		/* 8021QAZ set operations not allowed in read-only mode */
++		if (np->id == LLDP_MOD_8021QAZ && read_only_8021qaz)
++			return cmd_no_access;
+ 		while (ah->arg) {
+ 			if (!strcasecmp(ah->arg, arg) && ah->handle_test) {
+ 				rval = ah->handle_test(cmd, ah->arg, argvalue,
+@@ -620,11 +626,14 @@ int handle_set_arg(struct cmd *cmd, char
+ 	struct arg_handlers *ah;
+ 	int rval, status = cmd_not_applicable;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (!np->ops->get_arg_handler)
+ 			continue;
+ 		if (!(ah = np->ops->get_arg_handler()))
+ 			continue;
++		/* 8021QAZ set operations not allowed in read-only mode */
++		if (np->id == LLDP_MOD_8021QAZ && read_only_8021qaz)
++			return cmd_no_access;
+ 		while (ah->arg) {
+ 			if (!strcasecmp(ah->arg, arg) && ah->handle_set) {
+ 				rval = ah->handle_set(cmd, ah->arg, argvalue,
+diff -upr a/lldp_med.c b/lldp_med.c
+--- a/lldp_med.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_med.c	2020-11-03 09:08:48.061229070 -0500
+@@ -40,8 +40,6 @@
+ #include "lldp_mand_clif.h"
+ #include "lldp_med_cmds.h"
+ 
+-extern struct lldp_head lldp_head;
+-
+ struct tlv_info_medcaps {
+ 	u8 oui[OUI_SIZE];
+ 	u8 subtype;
+@@ -95,7 +93,7 @@ static struct med_data *med_data(const c
+ 	struct med_user_data *mud;
+ 	struct med_data *md = NULL;
+ 
+-	mud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_MED);
++	mud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_MED);
+ 	if (mud) {
+ 		LIST_FOREACH(md, &mud->head, entry) {
+ 			if (!strncmp(ifname, md->ifname, IFNAMSIZ) &&
+@@ -905,7 +903,7 @@ void med_ifup(char *ifname, struct lldp_
+ 		goto out_err;
+ 	}
+ 	memset(md, 0, sizeof(struct med_data));
+-	strncpy(md->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(md->ifname, ifname, IFNAMSIZ);
+ 	md->agenttype = agent->type;
+ 
+ 	if (med_bld_tlv(md, agent)) {
+@@ -914,7 +912,7 @@ void med_ifup(char *ifname, struct lldp_
+ 		free(md);
+ 		goto out_err;
+ 	}
+-	mud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_MED);
++	mud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_MED);
+ 	LIST_INSERT_HEAD(&mud->head, md, entry);
+ 	LLDPAD_INFO("%s:port %s added\n", __func__, ifname);
+ 	return;
+diff -upr a/lldp_med_cmds.c b/lldp_med_cmds.c
+--- a/lldp_med_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_med_cmds.c	2020-09-23 08:50:52.654813972 -0400
+@@ -303,6 +303,7 @@ static int _set_arg_med_devtype(struct c
+ 	case LLDP_MED_DEVTYPE_ENDPOINT_CLASS_III:
+ 	case LLDP_MED_DEVTYPE_ENDPOINT_CLASS_II:
+ 		tlv_enabletx(cmd->ifname, cmd->type, (OUI_TIA_TR41 << 8) | LLDP_MED_NETWORK_POLICY);
++		/* FALLTHROUGH */
+ 	case LLDP_MED_DEVTYPE_ENDPOINT_CLASS_I:
+ 	case LLDP_MED_DEVTYPE_NETWORK_CONNECTIVITY:
+ 		tlv_enabletx(cmd->ifname, cmd->type, (OUI_TIA_TR41 << 8) | LLDP_MED_RESERVED);
+diff -upr a/lldp_rtnl.c b/lldp_rtnl.c
+--- a/lldp_rtnl.c	2021-06-09 10:58:59.213200616 -0400
++++ b/lldp_rtnl.c	2021-04-05 12:02:17.319590520 -0400
+@@ -103,7 +103,8 @@ static void add_rtattr(struct nlmsghdr *
+ 
+ 	rta->rta_type = type;
+ 	rta->rta_len = len;
+-	memcpy(RTA_DATA(rta), data, alen);
++	if (data)
++		memcpy(RTA_DATA(rta), data, alen);
+ 	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+ }
+ 
+diff -upr a/lldp_tlv.c b/lldp_tlv.c
+--- a/lldp_tlv.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldp_tlv.c	2020-09-23 08:50:52.654813972 -0400
+@@ -112,13 +112,13 @@ int pack_tlv_after(struct unpacked_tlv *
+ 		return -1;
+ 
+ 	if (ptlv->size + mtlv->size > length) {
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
+ 		return -1;
+ 	}
+ 
+ 	memcpy(&mtlv->tlv[mtlv->size], ptlv->tlv, ptlv->size);
+ 	mtlv->size += ptlv->size;
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ 	return 0;
+ }
+ 
+@@ -158,7 +158,7 @@ struct unpacked_tlv *unpack_tlv(struct p
+ 	return upkd_tlv;
+ }
+ 
+-struct unpacked_tlv *free_unpkd_tlv(struct unpacked_tlv *tlv)
++void free_unpkd_tlv(struct unpacked_tlv *tlv)
+ {
+ 	if (tlv != NULL) {
+ 		if (tlv->info != NULL) {
+@@ -166,12 +166,10 @@ struct unpacked_tlv *free_unpkd_tlv(stru
+ 			tlv->info = NULL;
+ 		}
+ 		free(tlv);
+-		tlv = NULL;
+ 	}
+-	return NULL;
+ }
+ 
+-struct packed_tlv *free_pkd_tlv(struct packed_tlv *tlv)
++void free_pkd_tlv(struct packed_tlv *tlv)
+ {
+ 	if (tlv != NULL) {
+ 		if (tlv->tlv != NULL) {
+@@ -179,9 +177,7 @@ struct packed_tlv *free_pkd_tlv(struct p
+ 			tlv->tlv = NULL;
+ 		}
+ 		free(tlv);
+-		tlv = NULL;
+ 	}
+-	return NULL;
+ }
+ 
+ struct packed_tlv *create_ptlv()
+diff -upr a/lldptool.c b/lldptool.c
+--- a/lldptool.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldptool.c	2020-10-30 09:35:19.614361934 -0400
+@@ -64,6 +64,9 @@
+ #include "lldp_util.h"
+ #include "lldpad_status.h"
+ 
++struct lldp_head lldp_cli_head;
++struct lldp_head lldp_mod_head;
++extern void close_history(void);
+ static int show_raw;
+ 
+ static const char *cli_version =
+@@ -199,7 +202,7 @@ static void init_modules(void)
+ 		if (premod)
+ 			LIST_INSERT_AFTER(premod, module, lldp);
+ 		else
+-			LIST_INSERT_HEAD(&lldp_head, module, lldp);
++			LIST_INSERT_HEAD(&lldp_mod_head, module, lldp);
+ 		premod = module;
+ 	}
+ }
+@@ -208,9 +211,9 @@ void deinit_modules(void)
+ {
+ 	struct lldp_module *module;
+ 
+-	while (lldp_head.lh_first != NULL) {
+-		module = lldp_head.lh_first;
+-		LIST_REMOVE(lldp_head.lh_first, lldp);
++	while (lldp_mod_head.lh_first != NULL) {
++		module = lldp_mod_head.lh_first;
++		LIST_REMOVE(lldp_mod_head.lh_first, lldp);
+ 		module->ops->lldp_mod_unregister(module);
+ 	}
+ }
+@@ -222,28 +225,6 @@ static void usage(void)
+ 		commands_usage, commands_options, commands_help);
+ }
+ 
+-/* assumes input is pointer to two hex digits */
+-/* returns -1 on error */
+-int hex2int(char *b)
+-{
+-	int i;
+-	int n=0;
+-	int m;
+-
+-	for (i=0,m=1; i<2; i++,m--) {
+-		if (isxdigit(*(b+i))) {
+-			if (*(b+i) <= '9')
+-				n |= (*(b+i) & 0x0f) << (4*m);
+-			else
+-				n |= ((*(b+i) & 0x0f) + 9) << (4*m);
+-		}
+-		else {
+-			return -1;
+-		}
+-	}
+-	return n;
+-}
+-
+ void print_raw_message(char *msg, int print)
+ {
+ 	if (!print || !(print & SHOW_RAW))
+@@ -368,7 +349,7 @@ cli_cmd_help(UNUSED struct clif *clif, U
+ 	printf("%s\n%s\n%s", commands_usage, commands_options, commands_help);
+ 
+ 	printf("\nTLV identifiers:\n");
+-	LIST_FOREACH(np, &lldp_head, lldp)
++	LIST_FOREACH(np, &lldp_mod_head, lldp)
+ 		if (np->ops->print_help)
+ 			np->ops->print_help();
+ 	return 0;
+@@ -428,7 +409,7 @@ u32 lookup_tlvid(char *tlvid_str)
+ 	struct lldp_module *np;
+ 	u32 tlvid = INVALID_TLVID;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (np->ops->lookup_tlv_name) {
+ 			tlvid = np->ops->lookup_tlv_name(tlvid_str);
+ 			if (tlvid != INVALID_TLVID)
+@@ -711,6 +692,7 @@ static void cli_interactive()
+ 		}
+ 		free(cmd);
+ 	} while (!cli_quit);
++	close_history();
+ }
+ 
+ static void cli_terminate(UNUSED int sig)
+diff -upr a/lldptool_cmds.c b/lldptool_cmds.c
+--- a/lldptool_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/lldptool_cmds.c	2020-10-23 14:12:58.976289329 -0400
+@@ -27,6 +27,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <ctype.h>
++#include <sys/types.h>
+ #include "clif.h"
+ #include "dcb_types.h"
+ #include "lldptool.h"
+@@ -464,7 +465,7 @@ static void print_tlvs(struct cmd *cmd,
+ 			offset += 8;
+ 		
+ 		printed = 0;
+-		LIST_FOREACH(np, &lldp_head, lldp) {
++		LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 			if (np->ops->print_tlv(tlvid, tlv_len, ibuf+offset)) {
+ 					printed = 1;
+ 					break;
+diff -upr a/lldp_util.c b/lldp_util.c
+--- a/lldp_util.c	2021-06-09 10:58:59.215200642 -0400
++++ b/lldp_util.c	2020-09-23 08:50:52.654813972 -0400
+@@ -24,6 +24,7 @@
+ 
+ *******************************************************************************/
+ 
++#include <ctype.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -122,6 +123,28 @@ int hexstr2bin(const char *hex, u8 *buf,
+ 	return 0;
+ }
+ 
++/* assumes input is pointer to two hex digits */
++/* returns -1 on error */
++int hex2int(char *b)
++{
++	int i;
++	int n=0;
++	int m;
++
++	for (i=0,m=1; i<2; i++,m--) {
++		if (isxdigit(*(b+i))) {
++			if (*(b+i) <= '9')
++				n |= (*(b+i) & 0x0f) << (4*m);
++			else
++				n |= ((*(b+i) & 0x0f) + 9) << (4*m);
++		}
++		else {
++			return -1;
++		}
++	}
++	return n;
++}
++
+ char *print_mac(char *mac, char *buf)
+ {
+ 	sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x",
+@@ -189,26 +212,6 @@ int is_bond(const char *ifname)
+ }
+ 
+ /**
+- *	is_san_mac - check if address is a san mac addr
+- *	@addr: san mac address
+- *
+- *	Returns 0 if addr is NOT san mac, 1 if it is a san mac.
+- *
+- *	BUG: this does not do anything to prove it's a sanmac!!!!
+- *	SAN MAC is no different than LAN MAC, no way to tell!!!
+- */
+-int is_san_mac(u8 *addr)
+-{
+-	int i;
+-
+-	for ( i = 0; i < ETH_ALEN; i++) {
+-		if ( addr[i]!= 0xff )
+-			return 1;
+-	}
+-	return 0;
+-}
+-
+-/**
+  *	get_src_mac_from_bond - select a source MAC to use for slave
+  *	@bond_port: pointer to port structure for a bond interface
+  *	@ifname: interface name of the slave port
+@@ -314,11 +317,24 @@ int	get_src_mac_from_bond(struct port *b
+  */
+ int is_valid_mac(const u8 *mac)
+ {
+-	if (0 == (mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]))
+-		return 0;
+-	if (0xff == (mac[0] & mac[1] & mac[2] & mac[3] & mac[4] & mac[5]))
+-		return 0;
+-	return 1;
++	static const u8 zero_mac[ETH_ALEN] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
++	static const u8 ff_mac[ETH_ALEN]   = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
++	static const u8 iana_mcast[ETH_ALEN] = {0x01, 0x00, 0x5E};
++	static const u8 ipv6_mcast[ETH_ALEN] = {0x33, 0x33};
++
++        if(memcmp(mac, zero_mac, ETH_ALEN) == 0 ||
++	   memcmp(mac, ff_mac, ETH_ALEN)   == 0)
++                return 0;
++
++	/* IANA multicast and ipv6 multicast mac address
++	 * For reference check document: 
++	 * https://www.iana.org/assignments/ethernet-numbers/ethernet-numbers.xhtml
++	 */
++        if(memcmp(mac, iana_mcast, 3) == 0 ||
++           memcmp(mac, ipv6_mcast, 2) == 0)
++                return 0;
++	
++        return 1;
+ }
+ 
+ int read_int(const char *path)
+@@ -350,7 +366,7 @@ int get_ifflags(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&ifr, 0, sizeof(ifr));
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCGIFFLAGS, &ifr) == 0)
+ 			flags = ifr.ifr_flags;
+ 	}
+@@ -386,7 +402,7 @@ int get_ifpflags(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&ifr, 0, sizeof(ifr));
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCGIFPFLAGS, &ifr) == 0)
+ 			flags = ifr.ifr_flags;
+ 	}
+@@ -470,7 +486,7 @@ int is_slave(const char *ifmaster, const
+ 
+ 	memset(&ifr, 0, sizeof(ifr));
+ 	memset(&ifb, 0, sizeof(ifb));
+-	strncpy(ifr.ifr_name, ifmaster, IFNAMSIZ);
++	STRNCPY_TERMINATED(ifr.ifr_name, ifmaster, IFNAMSIZ);
+ 	ifr.ifr_data = (caddr_t)&ifb;
+ 	if (ioctl(fd, SIOCBONDINFOQUERY, &ifr))
+ 		goto out_done;
+@@ -500,7 +516,7 @@ int get_ifidx(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&ifreq, 0, sizeof(ifreq));
+-		strncpy(ifreq.ifr_name, ifname, IFNAMSIZ);
++		STRNCPY_TERMINATED(ifreq.ifr_name, ifname, IFNAMSIZ);
+ 		if (ioctl(fd, SIOCGIFINDEX, &ifreq) == 0)
+ 			idx = ifreq.ifr_ifindex;
+ 	}
+@@ -572,7 +588,7 @@ int is_bridge(const char *ifname)
+ 						 (unsigned long) &bi, 0, 0 };
+ 
+ 			ifr.ifr_data = (char *)args;
+-			strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++			STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 			if (ioctl(fd, SIOCDEVPRIVATE, &ifr) == 0)
+ 				rc = 1;
+ 		}
+@@ -610,7 +626,7 @@ int is_vlan(const char *ifname)
+ 	if (fd >= 0) {
+ 		memset(&ifv, 0, sizeof(ifv));
+ 		ifv.cmd = GET_VLAN_REALDEV_NAME_CMD;
+-		strncpy(ifv.device1, ifname, sizeof(ifv.device1));
++		STRNCPY_TERMINATED(ifv.device1, ifname, sizeof(ifv.device1));
+ 		if (ioctl(fd, SIOCGIFVLAN, &ifv) == 0)
+ 			rc = 1;
+ 	}
+@@ -637,7 +653,7 @@ int is_wlan(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&iwreq, 0, sizeof(iwreq));
+-		strncpy(iwreq.ifr_name, ifname, sizeof(iwreq.ifr_name));
++		STRNCPY_TERMINATED(iwreq.ifr_name, ifname, sizeof(iwreq.ifr_name));
+ 		if (ioctl(fd, SIOCGIWNAME, &iwreq) == 0)
+ 			rc = 1;
+ 	}
+@@ -650,6 +666,8 @@ static struct nla_policy ifla_info_polic
+ {
+   [IFLA_INFO_KIND]       = { .type = NLA_STRING},
+   [IFLA_INFO_DATA]       = { .type = NLA_NESTED },
++  [IFLA_INFO_SLAVE_KIND] = { .type = NLA_STRING},
++  [IFLA_INFO_SLAVE_DATA] = { .type = NLA_NESTED },
+ };
+ 
+ int is_macvtap(const char *ifname)
+@@ -754,7 +772,7 @@ int is_active(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&ifr, 0, sizeof(ifr));
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCGIFFLAGS, &ifr) == 0)
+ 			if (ifr.ifr_flags & IFF_UP)
+ 				rc = 1;
+@@ -775,7 +793,7 @@ int is_autoneg_supported(const char *ifn
+ 		memset(&cmd, 0, sizeof(cmd));
+ 		cmd.cmd = ETHTOOL_GSET;
+ 		ifr.ifr_data = &cmd;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCETHTOOL, &ifr) == 0)
+ 			if (cmd.supported & SUPPORTED_Autoneg)
+ 				rc = 1;
+@@ -796,7 +814,7 @@ int is_autoneg_enabled(const char *ifnam
+ 		memset(&cmd, 0, sizeof(cmd));
+ 		cmd.cmd = ETHTOOL_GSET;
+ 		ifr.ifr_data = &cmd;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCETHTOOL, &ifr) == 0)
+ 			rc = cmd.autoneg;
+ 	}
+@@ -833,7 +851,7 @@ int get_maucaps(const char *ifname)
+ 		memset(&cmd, 0, sizeof(cmd));
+ 		cmd.cmd = ETHTOOL_GSET;
+ 		ifr.ifr_data = &cmd;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCETHTOOL, &ifr) == 0) {
+ 			if (cmd.advertising & ADVERTISED_10baseT_Half)
+ 				caps |= MAUCAPADV_b10baseT;
+@@ -872,7 +890,7 @@ int get_mautype(const char *ifname)
+ 		memset(&cmd, 0, sizeof(cmd));
+ 		cmd.cmd = ETHTOOL_GSET;
+ 		ifr.ifr_data = &cmd;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCETHTOOL, &ifr) == 0) {
+ 			/* TODO: too many dot3MauTypes,
+ 			 * should check duplex, speed, and port */
+@@ -899,7 +917,7 @@ int get_mtu(const char *ifname)
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		memset(&ifr, 0, sizeof(ifr));
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCGIFMTU, &ifr) == 0)
+ 			rc = ifr.ifr_mtu;
+ 	}
+@@ -921,38 +939,86 @@ int get_mfs(const char *ifname)
+ 	return mfs;
+ }
+ 
+-int get_mac(const char *ifname, u8 mac[])
++int get_mac(const char *ifname, u8 mac[], bool perm_mac)
+ {
+-	int fd;
+-	int rc = EINVAL;
+-	struct ifreq ifr;
++	int ret, s;
++	struct nlmsghdr *nlh;
++	struct ifinfomsg *ifinfo;
++	struct nlattr *tb[IFLA_MAX+1],
++		*tb2[IFLA_INFO_MAX+1];
+ 
+-	memset(mac, 0, 6);
+-	fd = get_ioctl_socket();
+-	if (fd >= 0) {
+-		ifr.ifr_addr.sa_family = AF_INET;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+-		if (!ioctl(fd, SIOCGIFHWADDR, &ifr)) {
+-			memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+-			rc = 0;
+-		}
++	s = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
++
++	if (s < 0) {
++		goto out;
+ 	}
+-	return rc;
+-}
+ 
+-int get_macstr(const char *ifname, char *addr, size_t size)
+-{
+-	u8 mac[6];
+-	int rc;
++	nlh = malloc(NLMSG_SIZE);
+ 
+-	rc = get_mac(ifname, mac);
+-	if (rc == 0) {
+-		snprintf(addr, size, "%02x:%02x:%02x:%02x:%02x:%02x",
+-			mac[0], mac[1],	mac[2],	mac[3],	mac[4],	mac[5]);
++	if (!nlh) {
++		goto out;
+ 	}
+-	return rc;
+-}
+ 
++	memset(nlh, 0, NLMSG_SIZE);
++
++	nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
++	nlh->nlmsg_type = RTM_GETLINK;
++	nlh->nlmsg_flags = NLM_F_REQUEST;
++
++	ifinfo = NLMSG_DATA(nlh);
++	ifinfo->ifi_family = AF_UNSPEC;
++	ifinfo->ifi_index = get_ifidx(ifname);
++
++	ret = send(s, nlh, nlh->nlmsg_len, 0);
++
++	if (ret < 0) {
++		goto out_free;
++	}
++
++	memset(nlh, 0, NLMSG_SIZE);
++
++	do {
++		ret = recv(s, (void *) nlh, NLMSG_SIZE, MSG_DONTWAIT);
++	} while ((ret < 0) && errno == EINTR);
++
++	if (nlmsg_parse(nlh, sizeof(struct ifinfomsg),
++			(struct nlattr **)&tb, IFLA_MAX, NULL)) {
++		goto out_free;
++	}
++
++	if (tb[IFLA_ADDRESS])
++		memcpy(mac, (char*)(RTA_DATA(tb[IFLA_ADDRESS])), 6);
++
++	/* Check for the permanent mac address on bonding slaves */
++	if (perm_mac && tb[IFLA_LINKINFO]) {
++		char *kind;
++		struct nlattr *tb3;
++		int off = 0;
++
++		if (nla_parse_nested(tb2, IFLA_INFO_MAX, tb[IFLA_LINKINFO],
++				     ifla_info_policy)) {
++			goto out_free;
++		}
++		if (!tb2[IFLA_INFO_SLAVE_KIND])
++			goto out_free;
++
++		kind = (char*)(RTA_DATA(tb2[IFLA_INFO_SLAVE_KIND]));
++		if (strcmp(kind, "bond") && !tb2[IFLA_INFO_SLAVE_DATA])
++			goto out_free;
++
++		nla_for_each_nested(tb3, tb2[IFLA_INFO_SLAVE_DATA], off) {
++			if (nla_type(tb3) == IFLA_BOND_SLAVE_PERM_HWADDR) {
++				memcpy(mac, nla_data(tb3), nla_len(tb3));
++			}
++		}
++	}
++
++out_free:
++	free(nlh);
++out:
++	close(s);
++	return 0;
++}
+ 
+ u16 get_caps(const char *ifname)
+ {
+@@ -998,7 +1064,7 @@ int get_saddr(const char *ifname, struct
+ 	fd = get_ioctl_socket();
+ 	if (fd >= 0) {
+ 		ifr.ifr_addr.sa_family = AF_INET;
+-		strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
++		STRNCPY_TERMINATED(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+ 		if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
+ 			memcpy(saddr, &ifr.ifr_addr, sizeof(*saddr));
+ 			rc = 0;
+@@ -1039,9 +1105,11 @@ int get_saddr6(const char *ifname, struc
+ 
+ 	rc = getifaddrs(&ifaddr);
+ 	if (rc == 0) {
++		rc = -1;
+ 		for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+-			if ((ifa->ifa_addr->sa_family == AF_INET6) &&
+-			    (strncmp(ifa->ifa_name, ifname, IFNAMSIZ) == 0)) {
++			if (strncmp(ifa->ifa_name, ifname, IFNAMSIZ))
++				continue;
++			if (ifa->ifa_addr && (ifa->ifa_addr->sa_family == AF_INET6)) {
+ 				memcpy(saddr, ifa->ifa_addr, sizeof(*saddr));
+ 				rc = 0;
+ 				break;
+@@ -1092,7 +1160,7 @@ int get_addr(const char *ifname, int dom
+ 	else if (domain == AF_INET6)
+ 		return get_ipaddr6(ifname, (struct in6_addr *)buf);
+ 	else if (domain == AF_UNSPEC)
+-		return get_mac(ifname, (u8 *)buf);
++		return get_mac(ifname, (u8 *)buf, false);
+ 	else
+ 		return -1;
+ }
+@@ -1227,7 +1295,7 @@ int get_arg_val_list(char *ibuf, int ile
+ 		}
+ 		hexstr2bin(ibuf+*ioff, &arglen, sizeof(arglen));
+ 		*ioff += 2 * (int)sizeof(arglen);
+-		if (ilen - *ioff >= arglen) {
++		if (ilen - *ioff >= 0) {
+ 			args[i] = ibuf+*ioff;
+ 			*ioff += arglen;
+ 			*(arglens+i) = arglen;
+@@ -1237,7 +1305,7 @@ int get_arg_val_list(char *ibuf, int ile
+ 					   sizeof(argvalue_len));
+ 				argvalue_len = ntohs(argvalue_len);
+ 				*ioff += 2*sizeof(argvalue_len);
+-				if (ilen - *ioff >= argvalue_len) {
++				if (ilen - *ioff >= 0) {
+ 					argvals[i] = ibuf+*ioff;
+ 					*ioff += argvalue_len;
+ 					*(argvallens+i) = argvalue_len;
+diff -upr a/log.c b/log.c
+--- a/log.c	2015-01-20 13:42:56.000000000 -0500
++++ b/log.c	2020-09-23 08:50:52.655813990 -0400
+@@ -65,4 +65,5 @@ void log_message(int level, const char *
+ 		bypass_time = strchr(format, '\n') == 0;
+ 	}
+ 	va_end(va);
++	va_end(vb);
+ }
+diff -upr a/Makefile.am b/Makefile.am
+--- a/Makefile.am	2021-06-09 10:58:59.212200603 -0400
++++ b/Makefile.am	2021-04-05 12:02:17.315590455 -0400
+@@ -1,6 +1,9 @@
+ # target programs to be installed in ${sbindir}
+ sbin_PROGRAMS = lldpad dcbtool lldptool vdptool
+ 
++check_PROGRAMS = lldp_clif_test
++TESTS = $(check_PROGRAMS)
++
+ # package nltest and vdptest, but do not install it anywhere
+ if BUILD_DEBUG
+ noinst_PROGRAMS = nltest vdptest qbg22sim
+@@ -16,7 +19,7 @@ ACLOCAL_AMFLAGS = -I m4
+ parse_cli.o: CFLAGS+=-U_FORTIFY_SOURCE -Wno-error
+ 
+ ## system requires a shared libconfig
+-AM_CFLAGS = -Wall -Werror -Wextra -Wformat=2 $(LIBCONFIG_CFLAGS) $(LIBNL_CFLAGS)
++AM_CFLAGS = $(LIBCONFIG_CFLAGS) $(LIBNL_CFLAGS)
+ AM_LDFLAGS = $(LIBCONFIG_LIBS) $(LIBNL_LIBS) -lrt
+ 
+ ## header files to be installed, for programs using the client interface to lldpad 
+@@ -86,9 +89,11 @@ vdptool_LDADD = liblldp_clif.la
+ vdptool_LDFLAGS = -llldp_clif $(LIBNL_LIBS)
+ 
+ dcbtool_SOURCES = dcbtool.c dcbtool_cmds.c parse_cli.l \
+-weak_readline.c $(lldpad_include_HEADERS) $(noinst_HEADERS)
++	weak_readline.c lldp_rtnl.c lldp_util.c \
++	$(lldpad_include_HEADERS) $(noinst_HEADERS)
++
+ dcbtool_LDADD = liblldp_clif.la
+-dcbtool_LDFLAGS = -ldl -llldp_clif
++dcbtool_LDFLAGS = -ldl -llldp_clif $(LIBNL_LIBS)
+ 
+ lldptool_SOURCES = lldptool.c lldptool_cmds.c lldp_rtnl.c \
+ 		   lldp_mand_clif.c lldp_basman_clif.c lldp_med_clif.c \
+@@ -140,3 +145,18 @@ bashcompletiondir = $(sysconfdir)/bash_c
+ dist_bashcompletion_DATA = contrib/bash_completion/lldpad contrib/bash_completion/lldptool
+ 
+ AM_DISTCHECK_CONFIGURE_FLAGS = --enable-debug
++
++lldp_clif_test_SOURCES = test/lldp_clif_test.c lldp_basman_clif.c lldp_util.c \
++	lldp_rtnl.c
++lldp_clif_test_LDFLAGS = -lrt $(LIBNL_LIBS)
++
++RPMBUILD_TOP = $(abs_top_builddir)/rpm/rpmbuild
++RPMBUILD_OPT ?= --without check
++
++# Build user-space RPMs
++rpm: dist $(srcdir)/lldpad.spec
++	${MKDIR_P} ${RPMBUILD_TOP}/SOURCES
++	cp ${DIST_ARCHIVES} ${RPMBUILD_TOP}/SOURCES
++	rpmbuild ${RPMBUILD_OPT} \
++                 -D "_topdir ${RPMBUILD_TOP}" \
++                 -ba $(srcdir)/lldpad.spec
+diff -upr a/parse_cli.l b/parse_cli.l
+--- a/parse_cli.l	2015-01-20 13:42:56.000000000 -0500
++++ b/parse_cli.l	2020-09-23 08:50:52.655813990 -0400
+@@ -494,7 +494,8 @@ gp	{ if (!cmd) {
+ 					yyless(0);
+ 					}
+ 
+-<getup2tc>[0-7]			{ up2tc_a[up2tc_idx++] = atoi(yytext);
++<getup2tc>[0-7]			{ up2tc_a[up2tc_idx] = atoi(yytext);
++				up2tc_idx++;
+ 				if (up2tc_idx == 8) {
+ 					BEGIN(getpgargs);
+ 				}
+diff -upr a/qbg/ecp22.c b/qbg/ecp22.c
+--- a/qbg/ecp22.c	2015-01-20 13:42:56.000000000 -0500
++++ b/qbg/ecp22.c	2020-10-23 14:12:58.976289329 -0400
+@@ -119,7 +119,8 @@ static void ecp22_append(u8 *buffer, u32
+  */
+ void ecp22_putnode(struct ecp22_freelist *list, struct ecp22_payload_node *elm)
+ {
+-	elm->ptlv = free_pkd_tlv(elm->ptlv);
++	free_pkd_tlv(elm->ptlv);
++	elm->ptlv = NULL;
+ 	if (list->freecnt > ecp22_maxpayload)
+ 		free(elm);
+ 	else {
+@@ -154,6 +155,7 @@ static bool ecp22_build_ecpdu(struct ecp
+ 	memset(ecp->tx.frame, 0, sizeof ecp->tx.frame);
+ 	ecp22_append(ecp->tx.frame, &fb_offset, (void *)&eth, sizeof eth);
+ 
++	memset(&ecph, 0, sizeof(struct ecp22_hdr));
+ 	ecp22_hdr_set_version(&ecph, 1);
+ 	ecp22_hdr_set_op(&ecph, ECP22_REQUEST);
+ 	ecp22_hdr_set_subtype(&ecph, ECP22_VDP);
+@@ -749,7 +751,7 @@ static struct ecp22 *ecp22_create(char *
+ 			   ifname);
+ 		return NULL;
+ 	}
+-	strncpy(ecp->ifname, ifname, sizeof ecp->ifname);
++	STRNCPY_TERMINATED(ecp->ifname, ifname, sizeof ecp->ifname);
+ 	ecp->l2 = l2_packet_init(ecp->ifname, 0, ETH_P_ECP22,
+ 				 ecp22_rx_receiveframe, ecp, 1);
+ 
+@@ -774,7 +776,7 @@ void ecp22_start(char *ifname)
+ 	struct ecp22 *ecp;
+ 
+ 	LLDPAD_DBG("%s:%s start ecp\n", __func__, ifname);
+-	eud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_ECP22);
++	eud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_ECP22);
+ 	if (!eud) {
+ 		LLDPAD_DBG("%s:%s no ECP module\n", __func__, ifname);
+ 		return;
+@@ -782,6 +784,10 @@ void ecp22_start(char *ifname)
+ 	ecp = find_ecpdata(ifname, eud);
+ 	if (!ecp)
+ 		ecp = ecp22_create(ifname, eud);
++	if (!ecp) {
++		LLDPAD_DBG("%s:%s failed creating ECP22 instance\n", __func__, ifname);
++		return;
++	}
+ 	ecp->max_retries = ECP22_MAX_RETRIES_DEFAULT;
+ 	ecp->max_rte = ECP22_ACK_TIMER_DEFAULT;
+ 	LIST_INIT(&ecp->inuse.head);
+@@ -803,7 +809,7 @@ static void ecp22_removelist(ecp22_list
+ 
+ 	while ((np = LIST_FIRST(ptr))) {
+ 		LIST_REMOVE(np, node);
+-		np->ptlv = free_pkd_tlv(np->ptlv);
++		free_pkd_tlv(np->ptlv);
+ 		free(np);
+ 	}
+ }
+@@ -816,6 +822,7 @@ static void ecp22_remove(struct ecp22 *e
+ 	ecp22_removelist(&ecp->isfree.head);
+ 	ecp->isfree.freecnt = 0;
+ 	LIST_REMOVE(ecp, node);
++	l2_packet_deinit(ecp->l2);
+ 	free(ecp);
+ }
+ 
+@@ -832,7 +839,7 @@ void ecp22_stop(char *ifname)
+ 	struct ecp22 *ecp;
+ 
+ 	LLDPAD_DBG("%s:%s stop ecp\n", __func__, ifname);
+-	eud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_ECP22);
++	eud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_ECP22);
+ 	ecp = find_ecpdata(ifname, eud);
+ 	if (ecp)
+ 		ecp22_remove(ecp);
+@@ -847,7 +854,7 @@ static int ecp22_data_from_evb(char *ifn
+ 	struct ecp22_user_data *eud;
+ 	struct ecp22 *ecp;
+ 
+-	eud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_ECP22);
++	eud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_ECP22);
+ 	ecp = find_ecpdata(ifname, eud);
+ 	if (ecp) {
+ 		ecp->max_rte = ptr->max_rte;
+@@ -925,7 +932,7 @@ static int ecp22_req2send(char *ifname,
+ 
+ 	LLDPAD_DBG("%s:%s subtype:%d\n", __func__, ifname, subtype);
+ 
+-	eud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_ECP22);
++	eud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_ECP22);
+ 	ecp = find_ecpdata(ifname, eud);
+ 	if (!ecp) {
+ 		rc = -ENODEV;
+diff -upr a/qbg/ecp.c b/qbg/ecp.c
+--- a/qbg/ecp.c	2015-01-20 13:42:56.000000000 -0500
++++ b/qbg/ecp.c	2020-09-23 08:50:52.656814007 -0400
+@@ -299,7 +299,7 @@ static bool ecp_build_ECPDU(struct vdp_d
+ 
+ 		rc = ecp_append(vd->ecp.tx.frame, &fb_offset, ptlv->tlv,
+ 				ptlv->size);
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
+ 		if (rc)
+ 			p->seqnr = vd->ecp.lastSequence;
+ 		else
+@@ -682,7 +682,7 @@ static void ecp_rx_ReceiveFrame(void *ct
+ 	}
+ 
+ 	if (hdr->h_proto != example_hdr.h_proto) {
+-		LLDPAD_ERR("%s:%s ERROR ethertype %#x not ECP ethertype",
++		LLDPAD_ERR("%s:%s ERROR ethertype %#x not ECP ethertype\n",
+ 			    __func__, vd->ecp.ifname, htons(hdr->h_proto));
+ 		frame_error++;
+ 		return;
+@@ -795,7 +795,7 @@ int ecp_init(char *ifname)
+ 			   __func__, ifname);
+ 		return -1;
+ 	}
+-	strncpy(vd->ecp.ifname, ifname, sizeof vd->ecp.ifname);
++	STRNCPY_TERMINATED(vd->ecp.ifname, ifname, sizeof vd->ecp.ifname);
+ 	ecp_rx_change_state(vd, ECP_RX_IDLE);
+ 	ecp_rx_run_sm(vd);
+ 	ecp_somethingChangedLocal(vd, true);
+@@ -969,7 +969,7 @@ static void ecp_rx_ProcessFrame(struct v
+ 		if ((tlv->type != TYPE_0) && !tlv_stored) {
+ 			LLDPAD_DBG("%s:%s TLV (%u) was not stored (%p)\n",
+ 				   __func__, vd->ecp.ifname, tlv->type, tlv);
+-			tlv = free_unpkd_tlv(tlv);
++			free_unpkd_tlv(tlv);
+ 			vd->ecp.stats.statsTLVsUnrecognizedTotal++;
+ 		}
+ 		tlv = NULL;
+diff -upr a/qbg/vdp22.c b/qbg/vdp22.c
+--- a/qbg/vdp22.c	2021-06-09 10:58:59.210200578 -0400
++++ b/qbg/vdp22.c	2020-10-23 14:12:58.977289347 -0400
+@@ -455,10 +455,10 @@ static void copy_filter(unsigned char fi
+ 		fp->grpid = from->gpid;
+ 		if (fif == VDP22_FFMT_GROUPVID)
+ 			goto vid;
+-		/* Fall through intended */
++		/* FALLTHROUGH */
+ 	case VDP22_FFMT_MACVID:
+ 		memcpy(fp->mac, from->mac, sizeof(fp->mac));
+-		/* Fall through intended */
++		/* FALLTHROUGH */
+ 	case VDP22_FFMT_VID:
+ vid:
+ 		fp->vlan = vdp22_set_vlanid(from->vlan)
+@@ -694,7 +694,7 @@ static struct vdp22 *vdp22_findif(const
+ 	struct vdp22 *vdp = 0;
+ 
+ 	if (!ud) {
+-		ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_VDP22);
++		ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_VDP22);
+ 		if (!ud)
+ 			LLDPAD_DBG("%s:%s no VDP22 module\n", __func__,
+ 				   ifname);
+@@ -794,7 +794,7 @@ void vdp22_stop(char *ifname)
+ 	struct vsi22 *vsi;
+ 
+ 	LLDPAD_DBG("%s:%s stop vdp\n", __func__, ifname);
+-	vud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_VDP22);
++	vud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_VDP22);
+ 	if (!vud) {
+ 		LLDPAD_ERR("%s:%s no VDP22 module\n", __func__, ifname);
+ 		return;
+@@ -834,7 +834,7 @@ static struct vdp22 *vdp22_create(const
+ 			   ifname);
+ 		return NULL;
+ 	}
+-	strncpy(vdp->ifname, ifname, sizeof vdp->ifname);
++	STRNCPY_TERMINATED(vdp->ifname, ifname, sizeof vdp->ifname);
+ 	vdp->myrole = role;
+ 	LIST_INIT(&vdp->vsi22_que);
+ 	LIST_INSERT_HEAD(&eud->head, vdp, node);
+@@ -874,7 +874,7 @@ void vdp22_start(const char *ifname, int
+ 	struct vsi22 *vsi;
+ 
+ 	LLDPAD_DBG("%s:%s start vdp\n", __func__, ifname);
+-	vud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_VDP22);
++	vud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_VDP22);
+ 	if (!vud) {
+ 		LLDPAD_ERR("%s:%s no VDP22 module\n", __func__, ifname);
+ 		return;
+diff -upr a/qbg/vdp22_cmds.c b/qbg/vdp22_cmds.c
+--- a/qbg/vdp22_cmds.c	2021-06-09 10:58:59.201200461 -0400
++++ b/qbg/vdp22_cmds.c	2020-10-23 14:12:58.977289347 -0400
+@@ -57,7 +57,7 @@ static struct lldp_module *get_my_module
+ {
+ 	struct lldp_module *np = NULL;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp)
++	LIST_FOREACH(np, &lldp_mod_head, lldp)
+ 		if (thisid == np->id)
+ 			break;
+ 	return np;
+@@ -296,7 +296,7 @@ int vdp22_sendevent(struct vdpnl_vsi *p)
+ 	return 0;
+ }
+ 
+-static int vdp22_cmdok(struct cmd *cmd, cmd_status expected)
++static int vdp22_cmdok(struct cmd *cmd, int expected)
+ {
+ 	if (cmd->cmd != expected)
+ 		return cmd_invalid;
+@@ -473,6 +473,7 @@ static bool vdp22_partial_vsi_equal(stru
+ 			if (memcmp(p1->mgrid, p2->mgrid,
+ 				   sizeof(p2->mgrid)))
+ 				return false;
++			/* FALLTHROUGH */
+ 		case VSI_TYPEID_ARG:
+ 			if (p1->type_id != p2->type_id)
+ 				return false;
+@@ -576,7 +577,7 @@ static int get_arg_vsi(struct cmd *cmd,
+ 	memset(&vsi, 0, sizeof(vsi));
+ 	memset(vsi_str, 0, sizeof(vsi_str));
+ 	vsi.request = cmd->tlvid;
+-	strncpy(vsi.ifname, cmd->ifname, sizeof(vsi.ifname) - 1);
++	strncpy(vsi.ifname, cmd->ifname, sizeof(vsi.ifname));
+ 	good_cmd = cmd_failed;
+ 	if ((cmd->ops & op_config) && (cmd->ops & op_arg)) {
+ 		memset(&mac, 0, sizeof(mac));
+diff -upr a/qbg/vdp22sm.c b/qbg/vdp22sm.c
+--- a/qbg/vdp22sm.c	2021-06-09 10:58:59.210200578 -0400
++++ b/qbg/vdp22sm.c	2020-09-23 08:50:52.657814025 -0400
+@@ -1521,7 +1521,7 @@ static void vdp22br_process(struct vsi22
+ 	case VDP22_RESP_DEASSOC:
+ 		if (error > VDP22_STATUS_MASK)
+ 			p->status = VDP22_HARDBIT;
+-		/* Fall through intended */
++		/* FALLTHROUGH */
+ 	case VDP22_RESP_SUCCESS:
+ rest:
+ 		p->status |= VDP22_ACKBIT | make_status(error);
+@@ -1768,7 +1768,7 @@ static void vdp22br_run(struct vsi22 *p)
+ 			break;
+ 		case VDP22_BR_END:
+ 			vdp22br_end(p);
+-			break;
++			return;
+ 		}
+ 	} while (vdp22br_move_state(p) == true);
+ }
+diff -upr a/qbg/vdp.c b/qbg/vdp.c
+--- a/qbg/vdp.c	2015-01-20 13:42:56.000000000 -0500
++++ b/qbg/vdp.c	2020-10-23 14:12:58.977289347 -0400
+@@ -188,7 +188,7 @@ struct vdp_data *vdp_data(char *ifname)
+ 	struct vdp_user_data *ud;
+ 	struct vdp_data *vd = NULL;
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_VDP02);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_VDP02);
+ 	if (ud) {
+ 		LIST_FOREACH(vd, &ud->head, entry) {
+ 			if (!strncmp(ifname, vd->ifname, IFNAMSIZ))
+@@ -879,7 +879,7 @@ static bool vdp_vsi_set_bridge_state(str
+ {
+ 	switch(profile->state) {
+ 	case VSI_UNASSOCIATED:
+-		if ((profile->mode == VDP_MODE_DEASSOCIATE)) /* || (INACTIVE)) */ {
++		if (profile->mode == VDP_MODE_DEASSOCIATE) {
+ 			vdp_vsi_change_bridge_state(profile, VSI_DEASSOC_PROCESSING);
+ 			return true;
+ 		} else if (profile->mode == VDP_MODE_ASSOCIATE) {
+@@ -1198,9 +1198,9 @@ int vdp_indicate(struct vdp_data *vd, st
+ 			/* put it in the list  */
+ 			profile->state = VSI_UNASSOCIATED;
+ 			LIST_INSERT_HEAD(&vd->profile_head, profile, profile);
+-		}
+ 
+-		vdp_vsi_sm_bridge(profile);
++			vdp_vsi_sm_bridge(profile);
++		}
+ 	}
+ 
+ 	return 0;
+@@ -1357,7 +1357,7 @@ struct packed_tlv *vdp_gettlv(struct vdp
+ 	return ptlv;
+ 
+ out_free:
+-	ptlv = free_pkd_tlv(ptlv);
++	free_pkd_tlv(ptlv);
+ out_err:
+ 	LLDPAD_ERR("%s: %s failed\n", __func__, vd->ifname);
+ 	return NULL;
+@@ -1607,7 +1607,7 @@ void vdp_ifup(char *ifname, struct lldp_
+ 			 __func__, ifname, sizeof(*vd));
+ 		goto out_err;
+ 	}
+-	strncpy(vd->ifname, ifname, IFNAMSIZ);
++	STRNCPY_TERMINATED(vd->ifname, ifname, IFNAMSIZ);
+ 
+ 	vd->role = VDP_ROLE_STATION;
+ 	vd->enabletx = enabletx;
+@@ -1624,7 +1624,7 @@ void vdp_ifup(char *ifname, struct lldp_
+ 
+ 	LIST_INIT(&vd->profile_head);
+ 
+-	ud = find_module_user_data_by_id(&lldp_head, LLDP_MOD_VDP02);
++	ud = find_module_user_data_by_id(&lldp_mod_head, LLDP_MOD_VDP02);
+ 	LIST_INSERT_HEAD(&ud->head, vd, entry);
+ 
+ out_start_again:
+@@ -1882,7 +1882,7 @@ int vdp_trigger(struct vsi_profile *prof
+ 	if (!macp->req_pid)
+ 		return 0;
+ 	sleep(1);		/* Delay message notification */
+-	if (!profile->port || !profile->port->ifname) {
++	if (!profile->port || !profile->port->ifname[0]) {
+ 		LLDPAD_ERR("%s: no ifname found for profile %p:\n", __func__,
+ 			   profile);
+ 		goto error_exit;
+diff -upr a/qbg/vdp_cmds.c b/qbg/vdp_cmds.c
+--- a/qbg/vdp_cmds.c	2015-01-20 13:42:56.000000000 -0500
++++ b/qbg/vdp_cmds.c	2020-09-23 08:50:52.658814043 -0400
+@@ -85,7 +85,7 @@ static char *print_mode(char *s, size_t
+ 	return s;
+ }
+ 
+-static int vdp_cmdok(struct cmd *cmd, cmd_status expected)
++static int vdp_cmdok(struct cmd *cmd, int expected)
+ {
+ 	if (cmd->cmd != expected)
+ 		return cmd_invalid;
+diff -upr a/qbg/vdpnl.c b/qbg/vdpnl.c
+--- a/qbg/vdpnl.c	2021-06-09 10:58:59.201200461 -0400
++++ b/qbg/vdpnl.c	2020-09-23 08:50:52.658814043 -0400
+@@ -233,7 +233,7 @@ static int vdpnl_set(struct nlmsghdr *nl
+ 
+ 	vsi->ifindex = ifinfo->ifi_index;
+ 	if (tb[IFLA_IFNAME])
+-		strncpy(vsi->ifname, (char *)RTA_DATA(tb[IFLA_IFNAME]),
++		STRNCPY_TERMINATED(vsi->ifname, (char *)RTA_DATA(tb[IFLA_IFNAME]),
+ 			sizeof vsi->ifname);
+ 	else {
+ 		if (!if_indextoname(ifinfo->ifi_index, vsi->ifname)) {
+@@ -304,9 +304,9 @@ static size_t vdp_nllen(void)
+ 	size_t needed;
+ 
+ 	needed = nla_total_size(sizeof(struct nlattr)) /* IFLA_VF_PORT */
+-		+ nla_total_size(4);	/* IFLA_PORT_VF */
+-		+ nla_total_size(PORT_UUID_MAX); /* IFLA_PORT_INSTANCE_UUID */
+-		+ nla_total_size(2);	/* IFLA_PORT_RESPONSE */
++		+ nla_total_size(4) /* IFLA_PORT_VF */
++		+ nla_total_size(PORT_UUID_MAX) /* IFLA_PORT_INSTANCE_UUID */
++		+ nla_total_size(2); /* IFLA_PORT_RESPONSE */
+ 	return needed;
+ }
+ 
+diff -upr a/qbg_utils.c b/qbg_utils.c
+--- a/qbg_utils.c	2015-01-20 13:42:56.000000000 -0500
++++ b/qbg_utils.c	2020-11-03 09:08:48.062229088 -0500
+@@ -36,7 +36,6 @@
+ #include "qbg_utils.h"
+ 
+ extern int loglvl;			/* Global lldpad log level */
+-extern struct lldp_head lldp_head;
+ 
+ /*
+  * hexdump_frame - print raw evb/ecp/vdp frame
+@@ -73,7 +72,7 @@ void hexdump_frame(const char *ifname, c
+  */
+ int modules_notify(int id, int sender_id, char *ifname, void *data)
+ {
+-	struct lldp_module *mp = find_module_by_id(&lldp_head, id);
++	struct lldp_module *mp = find_module_by_id(&lldp_mod_head, id);
+ 	int rc = 0;
+ 
+ 	if (mp && mp->ops->lldp_mod_notify)
+diff -upr a/README b/README
+--- a/README	2015-01-20 13:42:56.000000000 -0500
++++ b/README	2020-09-23 08:50:52.646813830 -0400
+@@ -186,7 +186,9 @@ lldpad Application Install
+    lldpad will create the lldpad.conf file if it does not exist.
+ 
+    For development purposes, 'lldpad' can be run directly from the build 
+-   directory.
++   directory.  To run the unit tests associated with openlldpd, execute:
++
++     ./bootstrap.sh; ./configure; make check
+ 
+ Options
+ -------
+diff -upr a/tlv_dcbx.c b/tlv_dcbx.c
+--- a/tlv_dcbx.c	2015-01-20 13:42:56.000000000 -0500
++++ b/tlv_dcbx.c	2020-09-23 08:50:52.659814061 -0400
+@@ -154,7 +154,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->pg1)) {
+ 		ptlv = pack_tlv(dcbx->pg1);
+@@ -162,7 +163,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->pfc1)) {
+ 		ptlv = pack_tlv(dcbx->pfc1);
+@@ -170,7 +172,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->app1)) {
+ 		ptlv = pack_tlv(dcbx->app1);
+@@ -178,7 +181,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 
+ 	if (tlv_ok(dcbx->llink)) {
+@@ -187,7 +191,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 
+ 	if (offset != tlv->length)
+@@ -196,7 +201,8 @@ struct unpacked_tlv *bld_dcbx1_tlv(struc
+ 	return tlv;
+ 
+ error:
+-	ptlv = free_pkd_tlv(ptlv);
++	if (ptlv)
++		free_pkd_tlv(ptlv);
+ 	if (tlv) {
+ 		if (tlv->info)
+ 			free(tlv->info);
+@@ -254,7 +260,8 @@ struct unpacked_tlv *bld_dcbx2_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->pg2)) {
+ 		ptlv = pack_tlv(dcbx->pg2);
+@@ -262,7 +269,8 @@ struct unpacked_tlv *bld_dcbx2_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->pfc2)) {
+ 		ptlv = pack_tlv(dcbx->pfc2);
+@@ -270,7 +278,8 @@ struct unpacked_tlv *bld_dcbx2_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 	if (tlv_ok(dcbx->app2)) {
+ 		ptlv = pack_tlv(dcbx->app2);
+@@ -278,7 +287,8 @@ struct unpacked_tlv *bld_dcbx2_tlv(struc
+ 			goto error;
+ 		memcpy(&tlv->info[offset], ptlv->tlv, ptlv->size);
+ 		offset += ptlv->size;
+-		ptlv = free_pkd_tlv(ptlv);
++		free_pkd_tlv(ptlv);
++		ptlv = NULL;
+ 	}
+ 
+ 	if (offset != tlv->length)
+@@ -287,7 +297,8 @@ struct unpacked_tlv *bld_dcbx2_tlv(struc
+ 	return tlv;
+ 
+ error:
+-	ptlv = free_pkd_tlv(ptlv);
++	if (ptlv)
++		free_pkd_tlv(ptlv);
+ 	if (tlv) {
+ 		if (tlv->info)
+ 			free(tlv->info);
+diff -upr a/vdptool.c b/vdptool.c
+--- a/vdptool.c	2021-06-09 10:58:59.202200474 -0400
++++ b/vdptool.c	2020-10-23 14:12:58.978289365 -0400
+@@ -36,6 +36,7 @@
+  * set and query VSI profile settings.
+  */
+ 
++#define _GNU_SOURCE
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <unistd.h>
+@@ -60,6 +61,8 @@
+ #define OUI_ENCODE_HNDLR(name) name##_oui_encode_hndlr
+ #define OUI_PRNT_DECODE_HNDLR(name) name##_oui_print_decode_hndlr
+ 
++struct lldp_head lldp_mod_head;
++
+ #define EXTERN_OUI_FN(name) \
+ 	extern bool name##_oui_encode_hndlr(char *, char *, size_t); \
+ 	extern void name##_oui_print_decode_hndlr(char *)
+@@ -140,7 +143,7 @@ static char *print_status(cmd_status sta
+ 		str = "TLV does not support agent type";
+ 		break;
+ 	default:
+-		str = print_vdp_status(status);
++		str = print_vdp_status((enum vdp22_cmd_status)status);
+ 		break;
+ 	}
+ 	return str;
+@@ -178,7 +181,7 @@ static char *get_oui_name(char *argvals)
+ 
+ static void fill_oui_hdr(vdptool_oui_data_t *oui_data, char *oui_name)
+ {
+-	strncpy(oui_data->oui_name, oui_name, sizeof(oui_data->oui_name));
++	STRNCPY_TERMINATED(oui_data->oui_name, oui_name, sizeof(oui_data->oui_name));
+ 	snprintf(oui_data->data, sizeof(oui_data->data), "%02x%s",
+ 		 (unsigned int)strlen(oui_data->oui_name), oui_data->oui_name);
+ }
+@@ -587,7 +590,7 @@ static void print_all_vsis(char *ibuf, b
+ 	size_t ilen = strlen(ibuf);
+ 	u16 vsi_len;
+ 	int offset = 0, vsi_cnt = 0;
+-	char tmp_ibuf[strlen(ibuf)];
++	char tmp_ibuf[strlen(ibuf) + 1];
+ 
+ 	while (ilen > 0) {
+ 		vsi_len = hex2u16(ibuf + offset);
+@@ -795,13 +798,13 @@ static void init_modules(void)
+ 	struct lldp_module *premod = NULL;
+ 	int i = 0;
+ 
+-	LIST_INIT(&lldp_head);
++	LIST_INIT(&lldp_mod_head);
+ 	for (i = 0; register_tlv_table[i]; i++) {
+ 		module = register_tlv_table[i]();
+ 		if (premod)
+ 			LIST_INSERT_AFTER(premod, module, lldp);
+ 		else
+-			LIST_INSERT_HEAD(&lldp_head, module, lldp);
++			LIST_INSERT_HEAD(&lldp_mod_head, module, lldp);
+ 		premod = module;
+ 	}
+ }
+@@ -810,9 +813,9 @@ void deinit_modules(void)
+ {
+ 	struct lldp_module *module;
+ 
+-	while (lldp_head.lh_first != NULL) {
+-		module = lldp_head.lh_first;
+-		LIST_REMOVE(lldp_head.lh_first, lldp);
++	while (lldp_mod_head.lh_first != NULL) {
++		module = lldp_mod_head.lh_first;
++		LIST_REMOVE(lldp_mod_head.lh_first, lldp);
+ 		module->ops->lldp_mod_unregister(module);
+ 	}
+ }
+@@ -952,7 +955,7 @@ cli_cmd_help(UNUSED struct clif *clif, U
+ 	printf("%s\n%s\n%s", commands_usage, commands_options, commands_help);
+ 
+ 	printf("\nTLV identifiers:\n");
+-	LIST_FOREACH(np, &lldp_head, lldp)
++	LIST_FOREACH(np, &lldp_mod_head, lldp)
+ 		if (np->ops->print_help)
+ 			np->ops->print_help();
+ 	return 0;
+@@ -1005,7 +1008,7 @@ u32 lookup_tlvid(char *tlvid_str)
+ 	struct lldp_module *np;
+ 	u32 tlvid = INVALID_TLVID;
+ 
+-	LIST_FOREACH(np, &lldp_head, lldp) {
++	LIST_FOREACH(np, &lldp_mod_head, lldp) {
+ 		if (np->ops->lookup_tlv_name) {
+ 			tlvid = np->ops->lookup_tlv_name(tlvid_str);
+ 			if (tlvid != INVALID_TLVID)
+diff -upr a/vdptool_cisco_oui.c b/vdptool_cisco_oui.c
+--- a/vdptool_cisco_oui.c	2021-06-09 10:58:59.203200487 -0400
++++ b/vdptool_cisco_oui.c	2020-09-23 08:50:52.660814079 -0400
+@@ -28,7 +28,7 @@
+ #include "lldp_util.h"
+ #include "vdp_cisco.h"
+ 
+-bool cisco_oui_encode_hndlr(char *dst, char *src, int len)
++bool cisco_oui_encode_hndlr(char *dst, char *src, size_t len)
+ {
+ 	char *src_temp = strdup(src);
+ 	char *key, *data;
+diff -upr a/weak_readline.c b/weak_readline.c
+--- a/weak_readline.c	2015-01-20 13:42:56.000000000 -0500
++++ b/weak_readline.c	2020-09-23 08:50:52.660814079 -0400
+@@ -30,6 +30,9 @@
+ #include <dlfcn.h>
+ 
+ static int inited;
++static void *hist_handle;
++static void *rl_handle;
++
+ 
+ static char *(*readline_p)(const char *);
+ static void (*using_history_p)(void);
+@@ -38,9 +41,6 @@ static void (*add_history_p)(const char
+ 
+ static void weak_readline_init(void)
+ {
+-	void *hist_handle;
+-	void *rl_handle;
+-
+ 	inited = 1;
+ 	hist_handle = dlopen("libhistory.so", RTLD_LAZY | RTLD_GLOBAL);
+ 	if (!hist_handle)
+@@ -77,6 +77,16 @@ void using_history(void)
+ 		using_history_p();
+ }
+ 
++void close_history(void)
++{
++	if (inited) {
++		dlclose(rl_handle);
++		rl_handle = NULL;
++		dlclose(hist_handle);
++		hist_handle = NULL;
++	}
++}
++
+ void stifle_history(int max)
+ {
+ 	if (!inited)

@@ -1,0 +1,31 @@
+From cf7e43786749fcb1325d5b8e4cf0816f0eed3556 Mon Sep 17 00:00:00 2001
+From: Aaron Conole <aconole@redhat.com>
+Date: Wed, 25 Aug 2021 10:22:20 -0400
+Subject: [PATCH 2/8] macvtap: fix error condition
+
+If the socket() call fails, we will jump to out and pass a
+negative value to close() which is not allowed.
+
+Fixes: d43abb0267f3 ("lldpad: do not use macv[tap/lan] interfaces as ports")
+closes https://github.com/intel/openlldp/issues/75
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ lldp_util.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lldp_util.c b/lldp_util.c
+index 1e58b1e..be1333e 100644
+--- a/lldp_util.c
++++ b/lldp_util.c
+@@ -681,7 +681,7 @@ int is_macvtap(const char *ifname)
+ 	s = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
+ 
+ 	if (s < 0) {
+-		goto out;
++		return false;
+ 	}
+ 
+ 	nlh = malloc(NLMSG_SIZE);
+-- 
+2.31.1
+

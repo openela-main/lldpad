@@ -1,0 +1,31 @@
+From ff70e2edbf79355527660c4df7a554bd66d3a1fb Mon Sep 17 00:00:00 2001
+From: Aaron Conole <aconole@redhat.com>
+Date: Wed, 25 Aug 2021 10:29:19 -0400
+Subject: [PATCH 3/8] 8021qaz: squelch initialization errors
+
+Some static analysis tools (like coverity) flag this array
+as accessed without proper initialization.  Squelch by forcing
+initialization.
+
+closes https://github.com/intel/openlldp/issues/77
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ lldp_8021qaz_clif.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lldp_8021qaz_clif.c b/lldp_8021qaz_clif.c
+index f776392..9031cb0 100644
+--- a/lldp_8021qaz_clif.c
++++ b/lldp_8021qaz_clif.c
+@@ -253,7 +253,7 @@ static void ieee8021qaz_print_app_tlv(u16 len, char *info)
+ {
+ 	u8 app, app_idx, app_prio, app_sel;
+ 	u16 proto, offset = 2;
+-	u8 dscp[MAX_USER_PRIORITIES][MAX_APP_ENTRIES];
++	u8 dscp[MAX_USER_PRIORITIES][MAX_APP_ENTRIES] = {0};
+ 	u8 dscp_count[MAX_USER_PRIORITIES] = {0};
+ 	u8 i, j;
+ 	bool first_app = true;
+-- 
+2.31.1
+
