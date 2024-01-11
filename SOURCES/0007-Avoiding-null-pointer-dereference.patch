@@ -1,0 +1,71 @@
+From 2a352d36e2ecc3df4b1c2155b3fd2fa11f95e0bc Mon Sep 17 00:00:00 2001
+From: klebertarcisio <klebertarcisio@yahoo.com.br>
+Date: Fri, 2 Apr 2021 19:54:03 -0300
+Subject: [PATCH 7/8] Avoiding null pointer dereference
+
+---
+ ctrl_iface.c   | 2 ++
+ dcbtool_cmds.c | 2 ++
+ lldp_8021qaz.c | 4 ++++
+ lldp_dcbx.c    | 4 ++++
+ 4 files changed, 12 insertions(+)
+
+diff --git a/ctrl_iface.c b/ctrl_iface.c
+index 666f7c8..5f86fd2 100644
+--- a/ctrl_iface.c
++++ b/ctrl_iface.c
+@@ -180,6 +180,8 @@ int clif_iface_attach(struct clif_data *clifd,
+ 	} else {
+ 		tlv = strdup(ibuf);
+ 		str = tlv;
++		if (!str)
++			goto err_tlv;
+ 		str++;
+ 		/* Count number of TLV Modules */
+ 		tokenize = strtok(str, delim);
+diff --git a/dcbtool_cmds.c b/dcbtool_cmds.c
+index 0846f83..e1c76c4 100644
+--- a/dcbtool_cmds.c
++++ b/dcbtool_cmds.c
+@@ -373,6 +373,8 @@ int handle_dcb_cmds(struct clif *clif, int argc, char *argv[], int raw)
+ 	}
+ 
+ 	cmd_args = get_cmd_args();
++	if (!cmd_args)
++		return -1;
+ 
+ 	if (get_feature() == FEATURE_DCBX)
+ 		snprintf(cbuf, sizeof(cbuf), "%c%01x%02x%02x%s",
+diff --git a/lldp_8021qaz.c b/lldp_8021qaz.c
+index 8bb2bc9..5fccbe4 100644
+--- a/lldp_8021qaz.c
++++ b/lldp_8021qaz.c
+@@ -1959,6 +1959,10 @@ int ieee8021qaz_rchange(struct port *port, struct lldp_agent *agent,
+ 	if (tlv->type == TYPE_1) {
+ 		clear_ieee8021qaz_rx(qaz_tlvs);
+ 		rx = malloc(sizeof(*rx));
++		if (!rx) {
++			LLDPAD_INFO("failed malloc for rx\n");
++			return TLV_ERR;
++		}
+ 		memset(rx, 0, sizeof(*rx));
+ 		qaz_tlvs->rx = rx;
+ 		qaz_tlvs->ieee8021qazdu = 0;
+diff --git a/lldp_dcbx.c b/lldp_dcbx.c
+index 3567634..66df857 100644
+--- a/lldp_dcbx.c
++++ b/lldp_dcbx.c
+@@ -695,6 +695,10 @@ int dcbx_rchange(struct port *port, struct lldp_agent *agent, struct unpacked_tl
+ 	 */
+ 	if (tlv->type == TYPE_1) {
+ 		manifest = malloc(sizeof(*manifest));
++		if (!manifest) {
++			LLDPAD_INFO("failed malloc for manifest\n");
++			return TLV_ERR;
++		}
+ 		memset(manifest, 0, sizeof(*manifest));
+ 		dcbx->manifest = manifest;
+ 		dcbx->dcbdu = 0;
+-- 
+2.31.1
+

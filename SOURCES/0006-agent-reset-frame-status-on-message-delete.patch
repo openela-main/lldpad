@@ -1,0 +1,30 @@
+From fae175635442577605e06b10133306f86863f395 Mon Sep 17 00:00:00 2001
+From: Rajesh B M <59466308+rajeshm-elisity@users.noreply.github.com>
+Date: Mon, 8 Mar 2021 23:29:32 +0530
+Subject: [PATCH 6/8] agent: reset frame status on message delete
+
+Currently, when the agent state machine transitions out of
+DELETE_INFO, it leaves the rcvFrame flag set. This flag should
+be cleared since the frame info is no longer considered usable.
+
+Signed-off-by: Rajesh B M <bmrajesh@gmail.com>
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ lldp/rx.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/lldp/rx.c b/lldp/rx.c
+index 9a0c758..f0c8002 100644
+--- a/lldp/rx.c
++++ b/lldp/rx.c
+@@ -568,6 +568,7 @@ void process_delete_info(struct port *port, struct lldp_agent *agent)
+ 
+ 	agent->rx.sizein = 0;
+ 	agent->rx.remoteChange = true;
++	agent->rx.rcvFrame = false;
+ 	return;
+ }
+ 
+-- 
+2.31.1
+
