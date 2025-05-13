@@ -1,0 +1,101 @@
+From cfef0032247f9a3950a9909d59db88e948741ee3 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <liuhangbin@gmail.com>
+Date: Wed, 9 Oct 2024 03:53:16 +0000
+Subject: [PATCH 2/2] lldpad: do not remove config when stopping lldpad
+
+When lldpad is terminated by systemd or kill, the remove_all_adapters()
+function is called. However, this function is intended to release port
+resources, and the configuration file should not be destroyed. We only
+need to remove the port when it is explicitly deleted. Otherwise, all
+configurations will be lost when lldpad is stopped.
+
+Fixes: a75e35a0cb36 ("lldpad: remove device from config file when ports are removed")
+Reported-by: Fei Liu <feliu@redhat.com>
+Signed-off-by: Hangbin Liu <liuhangbin@gmail.com>
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ config.c      | 2 +-
+ event_iface.c | 2 +-
+ lldp/ports.c  | 5 +++--
+ lldp/ports.h  | 2 +-
+ lldpad.c      | 2 +-
+ 5 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/config.c b/config.c
+index 13ee7aa7ba47..e046f94fe911 100644
+--- a/config.c
++++ b/config.c
+@@ -135,7 +135,7 @@ void scan_port(UNUSED void *eloop_data, UNUSED void *user_ctx)
+ 		}
+ 		next = port->next;
+ 		if (!found)
+-			remove_port(port->ifname);
++			remove_port(port->ifname, true);
+ 	}
+ 
+ 	/* Walk port list looking for devices that should have been added
+diff --git a/event_iface.c b/event_iface.c
+index 916bf4b4cbe8..65f1f83bf8e7 100644
+--- a/event_iface.c
++++ b/event_iface.c
+@@ -297,7 +297,7 @@ static void event_if_decode_nlmsg(int route_type, void *data, int len)
+ 			if (route_type == RTM_DELLINK) {
+ 				LLDPAD_INFO("%s: %s: device removed!\n",
+ 					__func__, device_name);
+-				remove_port(device_name);
++				remove_port(device_name, true);
+ 			}
+ 			break;
+ 		case IF_OPER_DORMANT:
+diff --git a/lldp/ports.c b/lldp/ports.c
+index 3eab71f8eff1..284f8f6c7108 100644
+--- a/lldp/ports.c
++++ b/lldp/ports.c
+@@ -297,7 +297,7 @@ fail:
+ 	return NULL;
+ }
+ 
+-int remove_port(const char *ifname)
++int remove_port(const char *ifname, bool remove_config)
+ {
+ 	int ifindex = get_ifidx(ifname);
+ 	struct port *port;    /* Pointer to port to remove */
+@@ -356,7 +356,8 @@ int remove_port(const char *ifname)
+ 
+ 		LIST_REMOVE(agent, entry);
+ 
+-		remove_config_device(ifname, agent->type);
++		if (remove_config)
++			remove_config_device(ifname, agent->type);
+ 
+ 		free(agent);
+ 	}
+diff --git a/lldp/ports.h b/lldp/ports.h
+index 21280e0ef0e2..a5006fa86a74 100644
+--- a/lldp/ports.h
++++ b/lldp/ports.h
+@@ -97,7 +97,7 @@ extern struct port *porthead;
+ extern "C" {
+ #endif
+ struct port *add_port(int ifindex, const char *);
+-int remove_port(const char *);
++int remove_port(const char *, bool remove_config);
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/lldpad.c b/lldpad.c
+index 65e92c703c42..ddc8b631e0e5 100644
+--- a/lldpad.c
++++ b/lldpad.c
+@@ -167,7 +167,7 @@ static void remove_all_adapters(void)
+ 
+ 	for (port = porthead; port; port = next) {
+ 		next = port->next;
+-		remove_port(port->ifname);
++		remove_port(port->ifname, false);
+ 	}
+ 
+ 	return;
+-- 
+2.39.5 (Apple Git-154)
+

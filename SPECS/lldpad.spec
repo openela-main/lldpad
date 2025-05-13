@@ -1,26 +1,40 @@
 %global _default_patch_fuzz 2
-
 # https://fedoraproject.org/wiki/Packaging:Guidelines#Compiler_flags
 %global _hardened_build 1
 
-%global checkout 85e5583
+# https://docs.fedoraproject.org/en-US/packaging-guidelines/SourceURL/
+%global forgeurl    https://github.com/intel/openlldp/
+%global branch      branch-1.1
+%global commit      f1dd9eb961fab06723d2bedb2f7e2b81e45ee9ab
+%global shortcommit %(c=%{commit}; echo ${c:0:7})
+%global forgesetupargs -n openlldp-%{version} -p1
 
 Name:               lldpad
-Version:            1.1.0
-Release:            4.git%{checkout}%{?dist}
+Version:            1.1.1
+Release:            4.git%{shortcommit}%{?dist}
 Summary:            Intel LLDP Agent
-License:            GPLv2
-URL:                http://open-lldp.org/
-Source0:            %{name}-%{version}.tar.gz
+%forgemeta
 
-BuildRequires:      automake autoconf libtool
-BuildRequires:      flex >= 2.5.33
-BuildRequires:      kernel-headers >= 2.6.32
-BuildRequires:      libconfig-devel >= 1.3.2
+License:            GPL-2.0-only
+URL:                %{forgeurl}
+Source0:            %{forgesource}#/%{name}-%{version}.tar.gz
+# This is the upgrade package to latest upstream
+# When 1.1.2 or later is released, simply remove this
+# patch and generate a new one.
+Patch1:             0001-patch-to-latest.patch
+Patch2:             0002-do-not-remove-config.patch
+
+BuildRequires:      automake autoconf
+BuildRequires:      flex
+BuildRequires:      kernel-headers
+BuildRequires:      libconfig-devel
 BuildRequires:      libnl3-devel
+BuildRequires:      libtool
+BuildRequires:      make
 BuildRequires:      readline-devel
 BuildRequires:      systemd
-BuildRequires: make
+Requires:           libconfig
+Requires:           libnl3
 Requires:           readline
 
 Requires(post):     systemd
@@ -42,7 +56,7 @@ The %{name}-devel package contains header files for developing applications
 that use %{name}.
 
 %prep
-%autosetup -p1
+%forgeautosetup
 
 %build
 ./bootstrap.sh
@@ -83,9 +97,32 @@ rm -f %{buildroot}%{_libdir}/liblldp_clif.la
 %{_libdir}/liblldp_clif.so
 
 %changelog
+* Mon Jan 20 2025 Hangbin Liu <haliu@redhat.com> - 1.1.1-4.gitf1dd9eb
+- do not remove config when stopping lldpad (RHEL-61874)
+
+* Mon Sep 9 2024 Hangbin Liu <haliu@redhat.com> - 1.1.1-3.gitf1dd9eb
+- Rebase to latest upstream code
+- Remove interface configure if the interface deleted (RHEL-13242)
+- Fix strdup is not freed (RHEL-37524)
+- Fix using uninitialized value (RHEL-37548)
+- Fix copy past error (RHEL-37679)
+- Fix resource leak (RHEL-37685)
+
+* Wed Sep 4 2024 Hangbin Liu <haliu@redhat.com> - 1.1.1-2.gitf1dd9eb
+- Update gating test
+
+* Wed Sep 4 2024 Hangbin Liu <haliu@redhat.com> - 1.1.1-1.gitf1dd9eb
+- Rebase to 1.1.1
+- Fix program segfaults after entering the quit command (RHEL-5814)
+- Fix setting interface status not survive reboot (RHEL-5824)
+- Fix some other bugs
+
+* Wed Nov 15 2023 Hangbin Liu <haliu@redhat.com> - 1.1.0-5.git85e5583
+- Convert the license tag to SPDX format (RHELMISC-1358)
+
 * Mon Aug 09 2021 Mohan Boddu <mboddu@redhat.com> - 1.1.0-4.git85e5583
 - Rebuilt for IMA sigs, glibc 2.34, aarch64 flags
-  Related: rhbz#1991688
+- Related: rhbz#1991688
 
 * Fri Apr 16 2021 Mohan Boddu <mboddu@redhat.com> - 1.1.0-3.git85e5583
 - Rebuilt for RHEL 9 BETA on Apr 15th 2021. Related: rhbz#1947937
