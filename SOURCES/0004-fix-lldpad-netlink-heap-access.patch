@@ -1,0 +1,72 @@
+From ad0aaf147f63a5ff585c8bfbebe77871cf12e0e6 Mon Sep 17 00:00:00 2001
+From: Chunjie Zhu <chunjie.zhu@cloud.com>
+Date: Thu, 20 Feb 2025 14:52:24 +0800
+Subject: [PATCH 2/2] fix lldpad netlink heap access overrun
+
+Fixes: d43abb0267f36 ("lldpad: do not use macv[tap/lan] interfaces as ports")
+Signed-off-by: Chunjie Zhu <chunjie.zhu@cloud.com>
+Signed-off-by: Aaron Conole <aconole@redhat.com>
+---
+ lldp_util.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/lldp_util.c b/lldp_util.c
+index 510d2ef78b63..61fb0bcd3ac9 100644
+--- a/lldp_util.c
++++ b/lldp_util.c
+@@ -672,8 +672,9 @@ static struct nla_policy ifla_info_policy[IFLA_INFO_MAX + 1] =
+ 
+ int is_macvtap(const char *ifname)
+ {
+-	int ret, s;
++	int ret, s, realsize;
+ 	struct nlmsghdr *nlh;
++	void *temp;
+ 	struct ifinfomsg *ifinfo;
+ 	struct nlattr *tb[IFLA_MAX+1],
+ 		      *tb2[IFLA_INFO_MAX+1];
+@@ -684,14 +685,12 @@ int is_macvtap(const char *ifname)
+ 		return false;
+ 	}
+ 
+-	nlh = malloc(NLMSG_SIZE);
++	nlh = calloc(1, NLMSG_SIZE);
+ 
+ 	if (!nlh) {
+ 		goto out;
+ 	}
+ 
+-	memset(nlh, 0, NLMSG_SIZE);
+-
+ 	nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+         nlh->nlmsg_type = RTM_GETLINK;
+         nlh->nlmsg_flags = NLM_F_REQUEST;
+@@ -706,10 +705,23 @@ int is_macvtap(const char *ifname)
+ 		goto out_free;
+ 	}
+ 
+-	memset(nlh, 0, NLMSG_SIZE);
++	do {
++		realsize = recv(s, NULL, 0, MSG_DONTWAIT | MSG_PEEK | MSG_TRUNC);
++	} while ((realsize < 0) && errno == EINTR);
++
++	if (realsize < 0) {
++		goto out_free;
++	}
++
++	temp = realloc(nlh, realsize);
++	if (!temp) {
++		goto out_free;
++	}
++	memset(temp, 0, realsize);
++	nlh = temp;
+ 
+ 	do {
+-		ret = recv(s, (void *) nlh, NLMSG_SIZE, MSG_DONTWAIT);
++		ret = recv(s, (void *) nlh, realsize, MSG_DONTWAIT);
+ 	} while ((ret < 0) && errno == EINTR);
+ 
+ 	if (nlmsg_parse(nlh, sizeof(struct ifinfomsg),
+-- 
+2.46.0
+

@@ -8,17 +8,24 @@
 %global branch      branch-1.1
 %global commit      f1dd9eb961fab06723d2bedb2f7e2b81e45ee9ab
 %global shortcommit %(c=%{commit}; echo ${c:0:7})
-%global forgesetupargs -n openlldp-%{version}
+%global forgesetupargs -n openlldp-%{version} -p1
 
 Name:               lldpad
 Version:            1.1.1
-Release:            2.git%{shortcommit}%{?dist}
+Release:            4.git%{shortcommit}%{?dist}
 Summary:            Intel LLDP Agent
 %forgemeta
 
 License:            GPL-2.0-only
 URL:                %{forgeurl}
 Source0:            %{forgesource}#/%{name}-%{version}.tar.gz
+# This is the upgrade package to latest upstream
+# When 1.1.2 or later is released, simply remove this
+# patch and generate a new one.
+Patch1:             0001-patch-to-latest.patch
+Patch2:             0002-do-not-remove-config.patch
+Patch3:             0003-Protect-uses-of-select.patch
+Patch4:             0004-fix-lldpad-netlink-heap-access.patch
 
 BuildRequires:      automake autoconf
 BuildRequires:      flex
@@ -93,6 +100,12 @@ rm -f %{buildroot}%{_libdir}/liblldp_clif.la
 %{_libdir}/liblldp_clif.so
 
 %changelog
+* Mon Jan 20 2025 Hangbin Liu <haliu@redhat.com> - 1.1.1-4.gitf1dd9eb
+- do not remove config when stopping lldpad (RHEL-84979)
+
+* Thu Apr 17 2025 Hangbin Liu <haliu@redhat.com> - 1.1.1-3.gitf1dd9eb
+- Rebase to latest upstream code (RHEL-84979)
+
 * Tue Oct 29 2024 Troy Dawson <tdawson@redhat.com> - 1.1.1-2.gitf1dd9eb
 - Bump release for October 2024 mass rebuild:
   Resolves: RHEL-64018
